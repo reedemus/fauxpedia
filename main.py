@@ -3,7 +3,7 @@ import tempfile
 import logging
 import requests
 from dotenv import load_dotenv, find_dotenv
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 from fasthtml.common import *
 
 # Environment variables
@@ -35,7 +35,7 @@ Use the section headers below:
     test_prompt = f"""  
 Create a fictional and funny wikipedia biography of {name} as a {job} from {place}. 
 The output format must be html and css in typical wikipedia format. Strictly no emojis in the output.
-Use the placeholder image named temp_photo.jpg in the current directory.
+Use the placeholder image named portrait.jpg in the assets folder from the current directory.
 Use the section headers below:
 - Early life
 - Career
@@ -50,10 +50,13 @@ Use the section headers below:
     return test_prompt, image_prompt # llm_prompt, image_prompt
 
 
-def call_anthropic(prompt: str) -> str:
+async def call_anthropic(prompt: str) -> str:
     """Call an Anthropic/Claude-style LLM endpoint."""
-    client = Anthropic(api_key=llm_api_key)
-    msg = client.messages.create(
+    client = AsyncAnthropic(
+        api_key=llm_api_key,
+        timeout=120.0  # Increase timeout to 120 seconds
+    )
+    msg = await client.messages.create(
         model="claude-sonnet-4-5-20250929",
         max_tokens=4096,
         messages=[
@@ -296,7 +299,7 @@ def open_modal():
 async def submit_form(name: str, job: str, place: str, photo: UploadFile):
     # Call the LLM to generate the biography and image prompt
     llm_prompt, image_prompt = prepare_prompt(name, job, place)
-    out = call_anthropic(llm_prompt)  # Just to illustrate usage
+    out = await call_anthropic(llm_prompt)
     with open("output.html", "w") as f:
         f.write(out)
 
