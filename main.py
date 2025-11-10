@@ -50,6 +50,23 @@ Use the section headers below:
     return test_prompt, image_prompt # llm_prompt, image_prompt
 
 
+def cleanup_html_output(content: str) -> str:
+    """Cleans up the HTML output from the LLM by extracting the <!DOCTYPE html> to </html> block."""
+    # Define the regex pattern
+    # re.DOTALL makes '.' match newline characters
+    # re.IGNORECASE makes the match case-insensitive
+    pattern = re.compile(r"(<!DOCTYPE html>.*?</html>)", re.DOTALL | re.IGNORECASE)
+    
+    # Search for the pattern
+    match = pattern.search(content)
+    if match:
+        clean_html = match.group(1)
+        return clean_html
+    else:
+        print("Error: Could not find a valid <!DOCTYPE html>...</html> block.")
+        return content
+
+
 async def call_anthropic(prompt: str) -> str:
     """Call an Anthropic/Claude-style LLM endpoint."""
     client = AsyncAnthropic(
@@ -370,7 +387,8 @@ async def process_form(name: str, job: str, place: str):
     try:
         # Call the LLM to generate the biography and image prompt
         llm_prompt, image_prompt = prepare_prompt(name, job, place)
-        out = await call_anthropic(llm_prompt)
+        html_out = await call_anthropic(llm_prompt)
+        out = cleanup_html_output(html_out)
         with open("output.html", "w") as f:
             f.write(out)
 
