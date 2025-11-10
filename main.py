@@ -230,6 +230,28 @@ style = Style("""
     dialog {
         z-index: 2000;
     }
+    /* Loading spinner styles */
+    .loading-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem;
+        text-align: center;
+    }
+    .spinner {
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #3498db;
+        border-radius: 50%;
+        width: 50px;
+        height: 50px;
+        animation: spin 1s linear infinite;
+        margin-bottom: 1rem;
+    }
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
 """)
 
 # 2. Initialize the app, passing in our custom styles
@@ -258,7 +280,7 @@ def index():
 
     # Titled() creates a <title> and <H1>
     # Container() provides Pico CSS's standard page wrapper
-    return Titled("FastHTML Modal App",
+    return Titled("Create Your Fictional Wikipedia",
         Container(
             info_placeholder,
             start_btn,
@@ -284,12 +306,26 @@ def open_modal():
                 # --- HTMX Form Configuration ---
                 # 1. POST the form data to the /submit route
                 hx_post="/submit",
-                # 2. Target the dialog's *own* ID
-                hx_target="#modal-info",
-                # 3. Replace the entire dialog with the response
-                hx_swap="outerHTML"
+                # 2. Target multiple elements
+                hx_target="#info-display",
+                # 3. Replace the content 
+                hx_swap="innerHTML"
             )
         ),
+        # Add escape key handler to close modal and show output.html
+        Script("""
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') {
+                    // Close modal
+                    document.getElementById('modal-info').remove();
+                    // Load and display output.html
+                    htmx.ajax('GET', '/show_output', {
+                        target: '#info-display',
+                        swap: 'innerHTML'
+                    });
+                }
+            });
+        """),
         id="modal-info",
         open=True  # This makes the dialog visible
     )
@@ -297,36 +333,82 @@ def open_modal():
 # 5. The route that handles the form submission
 @rt("/submit")
 async def submit_form(name: str, job: str, place: str, photo: UploadFile):
-    # Call the LLM to generate the biography and image prompt
-    llm_prompt, image_prompt = prepare_prompt(name, job, place)
-    out = await call_anthropic(llm_prompt)
-    with open("output.html", "w") as f:
-        f.write(out)
+    # Return loading spinner immediately 
+    loading_display = Div(
+        Div(cls="spinner"),
+        H3("Generating your biography..."),
+        P("This may take a moment. Please wait."),
+        cls="loading-container"
+    )
+    
+    # Close the modal using out-of-band swap - replace with empty div
+    closed_modal = Div(id="modal-info", hx_swap_oob="true")
+    
+    # Also clear the modal placeholder
+    clear_modal_placeholder = Div(id="modal-placeholder", hx_swap_oob="true")
+    
+    # Start the processing in the background by triggering another request
+    trigger_processing = Script(f"""
+        setTimeout(function() {{
+            htmx.ajax('POST', '/process', {{
+                values: {{
+                    name: '{name}',
+                    job: '{job}',
+                    place: '{place}'
+                }},
+                target: '#info-display',
+                swap: 'innerHTML'
+            }});
+        }}, 500);
+    """)
+    
+    return loading_display, closed_modal, clear_modal_placeholder, trigger_processing
 
-    # Save user photo locally and upload to gen image service
-    # contents = await photo.read()  # Add 'await' here
-    # with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
-    #     f.write(contents)
-    #     photo_url = upload_photo(f.name)
-    #     logger.info(f"tempfile: {f.name}")
-    #     f.close()
-    #     request_id = call_generate_image(photo_url, image_prompt)
-    #     if request_id != "":
-    #         image_path = get_image(request_id)
+# 6. The route that handles the actual processing
+@rt("/process") 
+async def process_form(name: str, job: str, place: str):
+    try:
+        # Call the LLM to generate the biography and image prompt
+        llm_prompt, image_prompt = prepare_prompt(name, job, place)
+        out = await call_anthropic(llm_prompt)
+        with open("output.html", "w") as f:
+            f.write(out)
 
-    # --- Component 1: The new content for the main page (Out-of-Band) ---
-    # Replace the Div with the content of the HTML file "output.html"
-    info_display = File("output.html")
+        # Save user photo locally and upload to gen image service
+        # contents = await photo.read()  # Add 'await' here
+        # with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
+        #     f.write(contents)
+        #     photo_url = upload_photo(f.name)
+        #     logger.info(f"tempfile: {f.name}")
+        #     f.close()
+        #     request_id = call_generate_image(photo_url, image_prompt)
+        #     if request_id != "":
+        #         image_path = get_image(request_id)
 
-    # --- Component 2: The replacement for the modal (In-Band) ---
-    # The form targeted itself (#modal-info), so this is the "in-band"
-    # response. We return an *empty* DialogX with the same ID.
-    # This effectively makes the modal "disappear".
-    closed_modal = DialogX(id="modal-info")
+        # Return the generated content
+        return File("output.html")
+        
+    except Exception as e:
+        logger.error(f"Error processing form: {str(e)}")
+        return Div(
+            H3("Error"),
+            P(f"An error occurred while generating your biography: {str(e)}"),
+            Button("Try Again", hx_get="/open_modal", hx_target="#modal-placeholder", hx_swap="innerHTML"),
+            cls="loading-container"
+        )
 
-    # By returning a tuple, FastHTML sends both components.
-    # HTMX swaps the in-band one and the OOB one.
-    return closed_modal, info_display
+# 7. Route to show output.html when escape key is pressed
+@rt("/show_output")
+def show_output():
+    try:
+        return File("output.html")
+    except FileNotFoundError:
+        return Div(
+            H3("No Content Yet"),
+            P("No biography has been generated yet. Please fill out the form to create one."),
+            Button("Start", hx_get="/open_modal", hx_target="#modal-placeholder", hx_swap="innerHTML"),
+            cls="loading-container"
+        )
 
-# 6. Serve the app (no 'if __name__ == "__main__":' needed)
+# 8. Serve the app (no 'if __name__ == "__main__":' needed)
 serve()
