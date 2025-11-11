@@ -9,11 +9,11 @@ from fasthtml.common import *
 # Environment variables
 load_dotenv(find_dotenv())
 llm_api_key = os.environ.get("ANTHROPIC_API_KEY")
+gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
 
 # Configure basic logging for this module
 logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
 # gen_video_api_key = os.environ.get("SORA_API_KEY")
 
 
@@ -394,19 +394,22 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         if request_id != "":
             image_path = get_image(request_id)
 
-            # Update the portrait image in output.html
-            with open("output.html", "r+") as file:
-                html_content = file.read()
-                updated_html = html_content.replace(
-                    'id="portrait-image" src="assets/portrait.jpg"',
-                    f'id="portrait-image" src="{image_path}"'
-                )
-                file.seek(0) # reset to beginning to overwrite
-                file.write(updated_html)
+        # Update the portrait image in output.html
+        with open("output.html", "r+") as file:
+            html_content = file.read()
+            updated_html = html_content.replace(
+                'id="portrait-image" src="assets/portrait.jpg"',
+                f'id="portrait-image" src="{image_path}"'
+            )
+            file.seek(0) # reset to beginning to overwrite
+            file.write(updated_html)
+            file.truncate()
+        # Return an iframe so the full generated page (including its <head>
+        # and <style>) is shown in an isolated document context; this prevents
+        # the root app's styles from overriding the generated page's styles.
+        iframe_html = '<iframe src="/output_file" style="width:100%; height:80vh; border:0;" title="Generated biography"></iframe>'
+        return iframe_html
 
-        # Return the generated content
-        return File("output.html")
-        
     except Exception as e:
         logger.error(f"Error processing form: {str(e)}")
         return Div(
@@ -416,9 +419,17 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
             cls="loading-container"
         )
 
-# 7. Route to show output.html when escape key is pressed
+
+# Route to show output.html when escape key is pressed — return an iframe
 @rt("/show_output")
 def show_output():
+    iframe_html = '<iframe src="/output_file" style="width:100%; height:80vh; border:0;" title="Generated biography"></iframe>'
+    return iframe_html
+
+
+# Serve the generated output.html as a full page so it can be embedded in an iframe
+@rt("/output_file")
+def output_file():
     try:
         return File("output.html")
     except FileNotFoundError:
@@ -429,5 +440,4 @@ def show_output():
             cls="loading-container"
         )
 
-# 8. Serve the app (no 'if __name__ == "__main__":' needed)
 serve()
