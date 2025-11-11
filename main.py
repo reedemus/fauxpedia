@@ -22,20 +22,8 @@ def prepare_prompt(name: str, job: str, place: str) -> tuple[str, str]:
     llm_prompt = f"""
 Create a fictional and funny wikipedia biography of {name} as a {job} from {place}. 
 The output format must be html and css in typical wikipedia format. Strictly no emojis in the output.
-Use the section headers below:
-- Early life
-- Career
-- Personal life
-- Awards and Achievements
-- Wealth
-- Scandals
-- References
-- Further reading
-    """
-    test_prompt = f"""  
-Create a fictional and funny wikipedia biography of {name} as a {job} from {place}. 
-The output format must be html and css in typical wikipedia format. Strictly no emojis in the output.
 Use the placeholder image named portrait.jpg in the assets folder from the current directory.
+The placeholder image is given by element id "portrait-image".
 Use the section headers below:
 - Early life
 - Career
@@ -47,7 +35,7 @@ Use the section headers below:
 - Further reading
     """
     image_prompt = f"Create a photo of the attached image as a {job} performing his job in {place}."
-    return test_prompt, image_prompt # llm_prompt, image_prompt
+    return llm_prompt, image_prompt
 
 
 def cleanup_html_output(content: str) -> str:
@@ -176,22 +164,23 @@ def get_image(request_id: str) -> str:
         time.sleep(0.1)
 
     # Download image
+    saved_image_path = f"assets/{request_id}.jpg"
     if "data:image/jpeg;base64" in output:
         # Output has base64 string
         # Decode the base64 string back into binary data (bytes)
         content = output.split(',')
         img_bytes = base64.b64decode(content[1])
 
-        with open(f'{request_id}.jpeg', 'wb') as f:
+        with open(saved_image_path, 'wb') as f:
             f.write(img_bytes)
-            return_val = f'{request_id}.jpeg'
+            return_val = saved_image_path
     else:
         # output is image url
         response = requests.get(output)
         if response.status_code == 200:
-            with open(f'{request_id}.jpeg', 'wb') as f:
+            with open(saved_image_path, 'wb') as f:
                 f.write(response.content)
-                return_val = f'{request_id}.jpeg'
+                return_val = saved_image_path
         else:
             logger.error(f"Error: {response.status_code}, {response.text}")
     return return_val
@@ -350,6 +339,11 @@ def open_modal():
 # 5. The route that handles the form submission
 @rt("/submit")
 async def submit_form(name: str, job: str, place: str, photo: UploadFile):
+    # Save the uploaded photo to a temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_photo:
+        temp_photo.write(await photo.read())
+        temp_photo_path = temp_photo.name
+
     # Return loading spinner immediately 
     loading_display = Div(
         Div(cls="spinner"),
@@ -371,7 +365,8 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
                 values: {{
                     name: '{name}',
                     job: '{job}',
-                    place: '{place}'
+                    place: '{place}',
+                    photo_path: '{temp_photo_path}'
                 }},
                 target: '#info-display',
                 swap: 'innerHTML'
@@ -383,7 +378,7 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
 
 # 6. The route that handles the actual processing
 @rt("/process") 
-async def process_form(name: str, job: str, place: str):
+async def process_form(name: str, job: str, place: str, photo_path: str):
     try:
         # Call the LLM to generate the biography and image prompt
         llm_prompt, image_prompt = prepare_prompt(name, job, place)
@@ -392,16 +387,22 @@ async def process_form(name: str, job: str, place: str):
         with open("output.html", "w") as f:
             f.write(out)
 
-        # Save user photo locally and upload to gen image service
-        # contents = await photo.read()  # Add 'await' here
-        # with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
-        #     f.write(contents)
-        #     photo_url = upload_photo(f.name)
-        #     logger.info(f"tempfile: {f.name}")
-        #     f.close()
-        #     request_id = call_generate_image(photo_url, image_prompt)
-        #     if request_id != "":
-        #         image_path = get_image(request_id)
+        # Upload the saved photo to the generative image service
+        photo_url = upload_photo(photo_path)
+        logger.info(f"Uploaded photo path: {photo_path}")
+        request_id = call_generate_image(photo_url, image_prompt)
+        if request_id != "":
+            image_path = get_image(request_id)
+
+            # Update the portrait image in output.html
+            with open("output.html", "r+") as file:
+                html_content = file.read()
+                updated_html = html_content.replace(
+                    'id="portrait-image" src="assets/portrait.jpg"',
+                    f'id="portrait-image" src="{image_path}"'
+                )
+                file.seek(0) # reset to beginning to overwrite
+                file.write(updated_html)
 
         # Return the generated content
         return File("output.html")
