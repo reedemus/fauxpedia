@@ -1,4 +1,4 @@
-import os, json, time, base64, re, tempfile, logging, requests
+import os, json, time, base64, re, tempfile, logging, asyncio, httpx
 from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
 from fasthtml.common import *
@@ -71,37 +71,31 @@ async def call_anthropic(prompt: str) -> str:
 
 def upload_photo(file_path: str) -> str:
     """Upload user photo to the WavespeedAI media upload endpoint for processing.
+    Returns the url of the uploaded image.
     """
+    image_url = ""
     if not os.path.exists(file_path):
         print(f"Error: File {file_path} does not exist")
-        return
-    image_url = ""
+        return image_url
 
     api_url="https://api.wavespeed.ai/api/v3/media/upload/binary"
     headers = {
         "Authorization": f"Bearer {gen_image_api_key}",
     }
 
-    try:
-        with open(file_path, 'rb') as f:
-            files = {'file': f}
-            response = requests.post(api_url, files=files, headers=headers)
-            
-        if response.status_code == 200:
-            json_data = json.loads(response.content.decode('utf-8'))
-            image_url = json_data['data']['download_url']
-            logger.info(f"Upload successful! Download Url: {image_url}")
-        else:
-            logger.info(f"Upload failed with status code: {response.status_code}")
-            logger.info("Response:", response.text)
-    except Exception as e:
-        print(f"Error occurred: {str(e)}")
+    with open(file_path, 'rb') as f:
+        files = {'file': f}
+        response = httpx.post(api_url, files=files, headers=headers)
+        response.raise_for_status()
+        json_data = json.loads(response.content.decode('utf-8'))
+        image_url = json_data['data']['download_url']
+        logger.info(f"Upload successful! Download url: {image_url}")
     return image_url
 
 
 def call_generate_image(face_image_url: str, prompt: str) -> str:
     """Call a generative image API to produce an image of the person in the job role.
-    Returns request ID of the request.
+    Returns request ID of image.
     """
     return_val = ""
 
@@ -117,21 +111,18 @@ def call_generate_image(face_image_url: str, prompt: str) -> str:
         "prompt": prompt,
         "size": "1024*1536" # Portrait orientation 2:3
     }
-    response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
-    
-    if response.status_code == 200:
-        result = response.json()["data"]
-        request_id = result["id"]
-        return_val = request_id
-        logger.info(f"Task submitted successfully. Request ID: {request_id}")
-    else:
-        logger.error(f"Error: {response.status_code}, {response.text}")
+    response = httpx.post(url, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    result = response.json()["data"]
+    request_id = result["id"]
+    return_val = request_id
+    logger.info(f"Call gen image API with request ID: {request_id}")
     return return_val
 
 
-def get_image(request_id: str) -> str:
-    """Retrieve generated image using request ID
-    Returns path to the generated image file.
+def poll_generated_result(request_id: str) -> str:
+    """Poll for the result of the generated image/video from request id.
+    Returns url or base64 string.
     """
     url = f"https://api.wavespeed.ai/api/v3/predictions/{request_id}/result"
     headers = {"Authorization": f"Bearer {gen_image_api_key}"}
@@ -140,7 +131,7 @@ def get_image(request_id: str) -> str:
     # Poll for results
     begin = time.time()
     while True:
-        response = requests.get(url, headers=headers)
+        response = httpx.get(url, headers=headers)
         if response.status_code == 200:
             result_json = response.json()["data"]
             status = result_json["status"]
@@ -148,7 +139,7 @@ def get_image(request_id: str) -> str:
             if status == "completed":
                 end = time.time()
                 logger.info(f"Task completed in {end - begin} seconds.")
-                output = result_json["outputs"][0]
+                return_val = result_json["outputs"][0]
                 break
             elif status == "failed":
                 logger.info(f"Task failed: {result_json.get('error')}")
@@ -158,28 +149,48 @@ def get_image(request_id: str) -> str:
         else:
             logger.error(f"Error: {response.status_code}, {response.text}")
             break
-        time.sleep(0.1)
+        time.sleep(2)
+    return return_val
 
-    # Download image
+
+async def download_generated_result(request_id: str, url: str) -> str:
+    """Download generated image/video from url.
+    Returns local path of saved image/video"""
     saved_image_path = f"assets/{request_id}.jpg"
-    if "data:image/jpeg;base64" in output:
-        # Output has base64 string
+    saved_video_path = f"assets/{request_id}.mp4"
+    return_val = ""
+
+    if "data:image/jpeg;base64" in url:
+        # url is actually a base64 string
         # Decode the base64 string back into binary data (bytes)
-        content = output.split(',')
+        content = url.split(',')
         img_bytes = base64.b64decode(content[1])
 
         with open(saved_image_path, 'wb') as f:
             f.write(img_bytes)
             return_val = saved_image_path
-    else:
-        # output is image url
-        response = requests.get(output)
-        if response.status_code == 200:
+            logger.info(f"Saved generated image to {saved_image_path}")
+
+    elif ".jpeg" in url:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            response.raise_for_status()
             with open(saved_image_path, 'wb') as f:
                 f.write(response.content)
                 return_val = saved_image_path
-        else:
-            logger.error(f"Error: {response.status_code}, {response.text}")
+                logger.info(f"Saved generated image to {saved_image_path}")
+
+    elif ".mp4" in url:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            with open(saved_video_path, 'wb') as f:
+                f.write(response.content)
+                return_val = saved_video_path
+                logger.info(f"Saved generated video to {saved_video_path}")
+
+    else:
+        logger.error(f"Error: download failed!")
     return return_val
 
 
@@ -384,12 +395,11 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         with open("output.html", "w") as f:
             f.write(out)
 
-        # Upload the saved photo to the generative image service
+        # Upload the user photo to the generative image service
         photo_url = upload_photo(photo_path)
-        logger.info(f"Uploaded photo path: {photo_path}")
         request_id = call_generate_image(photo_url, image_prompt)
-        if request_id != "":
-            image_path = get_image(request_id)
+        download_url = poll_generated_result(request_id)
+        image_path = await download_generated_result(request_id, download_url)
 
         # Update the portrait image in output.html
         with open("output.html", "r+") as file:
