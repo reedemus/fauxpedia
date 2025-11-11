@@ -1,7 +1,4 @@
-import os, json, time, base64
-import tempfile
-import logging
-import requests
+import os, json, time, base64, re, tempfile, logging, requests
 from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
 from fasthtml.common import *
@@ -118,7 +115,7 @@ def call_generate_image(face_image_url: str, prompt: str) -> str:
         "enable_sync_mode": False,
         "images": [face_image_url],
         "prompt": prompt,
-        "size": "1024*1024"
+        "size": "1024*1536" # Portrait orientation 2:3
     }
     response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
     
@@ -340,7 +337,7 @@ def open_modal():
 @rt("/submit")
 async def submit_form(name: str, job: str, place: str, photo: UploadFile):
     # Save the uploaded photo to a temporary file
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_photo:
+    with tempfile.NamedTemporaryFile(delete=True, suffix=".jpg") as temp_photo:
         temp_photo.write(await photo.read())
         temp_photo_path = temp_photo.name
 
