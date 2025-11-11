@@ -60,7 +60,7 @@ async def call_anthropic(prompt: str) -> str:
     )
     msg = await client.messages.create(
         model="claude-sonnet-4-5-20250929",
-        max_tokens=4096,
+        max_tokens= 5120,
         messages=[
             {"role": "user", "content": prompt}
         ]
@@ -348,7 +348,7 @@ def open_modal():
 @rt("/submit")
 async def submit_form(name: str, job: str, place: str, photo: UploadFile):
     # Save the uploaded photo to a temporary file
-    with tempfile.NamedTemporaryFile(delete=True, suffix=".jpg") as temp_photo:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_photo:
         temp_photo.write(await photo.read())
         temp_photo_path = temp_photo.name
 
