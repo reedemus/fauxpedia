@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 ## MODEL CALLS ##
+def expand_prompt(name: str, job: str, place: str) -> str:
+    llm_prompt = f"""Expand the prompt for a video generation model to include the subject, scene and motion: \
+        the person in the image is a highly successful and famous {job} working at {place}"""
+    return llm_prompt
+
 def prepare_prompt(name: str, job: str, place: str) -> tuple[str, str]:
     llm_prompt = f"""
 Create a fictional and funny wikipedia biography of {name} as a {job} from {place}. 
@@ -194,37 +199,30 @@ async def download_generated_result(request_id: str, url: str) -> str:
     return return_val
 
 
-def call_sora_video(image_path: str, scene_prompt: str) -> str:
-    """Call SORA video generation model.
+async def call_generate_video(image_path: str, scene_prompt: str) -> str:
+    """Call video generation model"""
+    return_val = ""
 
-    Returns path to generated video file. Expect a multipart upload with the image and a prompt.
-    Configure SORA_API_URL and SORA_API_KEY.
-    """
-    url = os.environ.get("SORA_API_URL")
-    key = os.environ.get("SORA_API_KEY")
-    if not url or not key:
-        raise RuntimeError("SORA_API_URL or SORA_API_KEY not set")
+    url = "https://api.wavespeed.ai/api/v3/wavespeed-ai/wan-2.2/i2v-480p"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {gen_image_api_key}",
+    }
+    payload = {
+        "duration": 8,
+        "seed": -1,
+        "image": image_path,
+        "prompt": scene_prompt,
+    }
 
-    with open(image_path, "rb") as f:
-        files = {"image": f}
-        data = {"prompt": scene_prompt}
-        headers = {"Authorization": f"Bearer {key}"}
-        resp = requests.post(url, files=files, data=data, headers=headers, timeout=180)
-    resp.raise_for_status()
-    content_type = resp.headers.get("Content-Type", "")
-    out_path = tempfile.mktemp(suffix=".mp4")
-    if "application/json" in content_type:
-        js = resp.json()
-        b64 = js.get("video_base64") or js.get("b64") or js.get("video")
-        if not b64:
-            raise RuntimeError("Unexpected JSON response from SORA API: %s" % js)
-        with open(out_path, "wb") as out:
-            out.write(base64.b64decode(b64))
-    else:
-        with open(out_path, "wb") as out:
-            out.write(resp.content)
-
-    return out_path
+    async with httpx.AsyncClient() as client:
+        response = await client.post(url, headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+        result = response.json()["data"]
+        request_id = result["id"]
+        return_val = request_id
+        logger.info(f"Task submitted successfully. Request ID: {request_id}")
+    return return_val
 
 
 ## VIEW ##
@@ -384,24 +382,37 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
     
     return loading_display, closed_modal, clear_modal_placeholder, trigger_processing
 
+@rt('/video_status')
+def video_status(vid: str):
+    """Simple status endpoint polled by the generated output page.
+    Returns JSON: {ready: bool, url: str}
+    """
+    video_path = os.path.join('assets', f"{vid}.mp4")
+    if os.path.exists(video_path):
+        # return a URL relative to the app root so the iframe can load it
+        return {"ready": True, "url": f"assets/{vid}.mp4"}
+    else:
+        return {"ready": False}
+
 # 6. The route that handles the actual processing
 @rt("/process") 
 async def process_form(name: str, job: str, place: str, photo_path: str):
     try:
         # Call the LLM to generate the biography and image prompt
-        llm_prompt, image_prompt = prepare_prompt(name, job, place)
-        html_out = await call_anthropic(llm_prompt)
-        out = cleanup_html_output(html_out)
-        with open("output.html", "w") as f:
-            f.write(out)
+        llm_prompt, image_prompt, video_prompt = prepare_prompt(name, job, place)
+        # html_out = await call_anthropic(llm_prompt)
+        # out = cleanup_html_output(html_out)
+        # with open("output.html", "w") as f:
+        #     f.write(out)
 
-        # Upload the user photo to the generative image service
-        photo_url = upload_photo(photo_path)
-        request_id = call_generate_image(photo_url, image_prompt)
-        download_url = poll_generated_result(request_id)
-        image_path = await download_generated_result(request_id, download_url)
+        # # Upload the user photo to the generative image service
+        # photo_url = upload_photo(photo_path)
+        # request_id = call_generate_image(photo_url, image_prompt)
+        # download_url = poll_generated_result(request_id)
+        # image_path = await download_generated_result(request_id, download_url)
 
-        # Update the portrait image in output.html
+        # # Update the portrait image in output.html
+        image_path = "assets/portrait.jpg"
         with open("output.html", "r+") as file:
             html_content = file.read()
             updated_html = html_content.replace(
@@ -411,11 +422,74 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
             file.seek(0) # reset to beginning to overwrite
             file.write(updated_html)
             file.truncate()
-        # Return an iframe so the full generated page (including its <head>
-        # and <style>) is shown in an isolated document context; this prevents
-        # the root app's styles from overriding the generated page's styles.
-        iframe_html = '<iframe src="/output_file" style="width:100%; height:80vh; border:0;" title="Generated biography"></iframe>'
-        return iframe_html
+
+        image_id = "https://d1q70pf5vjeyhc.cloudfront.net/predictions/605d60a14dc04800b3a9da3cfffdc760/1.jpeg"
+        video_request_id = await call_generate_video(image_id, video_prompt)
+        download_url = poll_generated_result(video_request_id)
+        await download_generated_result(video_request_id, download_url)
+
+        # If we have a request_id (image/video task id), inject a small polling script
+        # that will check the /video_status endpoint and replace the image with the video when ready.
+        if video_request_id:
+            # Build the polling script using a placeholder replacement instead of
+            # the % operator. The original used "%s" % (video_request_id,)
+            # but the script contains literal percent signs (eg '100%') which
+            # confuse Python's % formatting and raise "not enough arguments"
+            # or similar formatting errors. We use json.dumps() to safely
+            # produce a quoted JS string and replace a unique placeholder.
+            poll_template = """
+<script>
+(function() {
+    var vidId = PLACEHOLDER_VID_ID;
+    function check() {
+        fetch('/video_status?vid=' + encodeURIComponent(vidId))
+            .then(function(r) { return r.json(); })
+            .then(function(j) {
+                if(j.ready) {
+                    try {
+                        var img = document.getElementById('portrait-image');
+                        if(!img) return;
+                        var video = document.createElement('video');
+                        video.setAttribute('autoplay', '');
+                        video.setAttribute('loop', '');
+                        video.setAttribute('muted', '');
+                        video.setAttribute('playsinline', '');
+                        video.style.maxWidth = '100%';
+                        video.style.height = 'auto';
+                        var source = document.createElement('source');
+                        source.src = j.url;
+                        source.type = 'video/mp4';
+                        video.appendChild(source);
+                        img.parentNode.replaceChild(video, img);
+                    } catch(e) { console.error(e); }
+                } else {
+                    setTimeout(check, 2000);
+                }
+            }).catch(function() { setTimeout(check, 2000); });
+    }
+    // start after a short delay so the iframe content has a chance to render
+    setTimeout(check, 1500);
+})();
+</script>
+"""
+
+        # Use json.dumps to produce a safe JS string (properly quoted/escaped)
+        poll_script = poll_template.replace("PLACEHOLDER_VID_ID", json.dumps(video_request_id))
+
+        with open("output.html", "r+") as file:
+            html_content = file.read()
+            # Insert poll_script before </body> if present, otherwise append
+            if re.search(r'</body>', html_content, flags=re.IGNORECASE):
+                    html_content = re.sub(r'</body>', poll_script + '</body>', html_content, flags=re.IGNORECASE)
+            else:
+                html_content = html_content + poll_script
+            file.seek(0) # reset to beginning to overwrite
+            file.write(html_content)
+            file.truncate()
+
+            # Return an iframe so the full generated page is shown immediately
+            iframe_html = '<iframe src="/output_file" style="width:100%; height:80vh; border:0;" title="Generated biography"></iframe>'
+            return iframe_html
 
     except Exception as e:
         logger.error(f"Error processing form: {str(e)}")
