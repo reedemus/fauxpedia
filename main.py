@@ -13,6 +13,10 @@ logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.
 logger = logging.getLogger(__name__)
 # gen_video_api_key = os.environ.get("SORA_API_KEY")
 
+# Delete existing wiki "output.html" if exists
+if "output.html" in os.listdir(os.curdir):
+    os.remove("output.html")
+
 
 ## MODEL CALLS ##
 def prepare_prompt(name: str, job: str, place: str) -> tuple[str, str]:
@@ -314,35 +318,34 @@ def open_modal():
                 Input(name="name", placeholder="Name", required=True),
                 Input(name="job", placeholder="Job", required=True),
                 Input(name="place", placeholder="The place/environment of where you work", required=True),
-                Input(name="photo", placeholder="photo of you with clear face", type="file", accept="image/*", required=True),  # Added input for picture file
+                Input(name="photo", placeholder="photo of you with clear face", type="file", accept="image/*", required=True),
                 Button("Enter", type="submit"),
-                
-                # --- HTMX Form Configuration ---
-                # 1. POST the form data to the /submit route
+                # Form attributes for HTMX
                 hx_post="/submit",
-                # 2. Target multiple elements
-                hx_target="#info-display",
-                # 3. Replace the content 
-                hx_swap="innerHTML"
+                hx_target="#info-display", 
+                hx_swap="innerHTML",
+                enctype="multipart/form-data"  # Required for file uploads
             )
         ),
-        # Add escape key handler to close modal and show output.html
-        Script("""
-            document.addEventListener('keydown', function(e) {
-                if (e.key === 'Escape') {
-                    // Close modal
-                    document.getElementById('modal-info').remove();
-                    // Load and display output.html
-                    htmx.ajax('GET', '/show_output', {
-                        target: '#info-display',
-                        swap: 'innerHTML'
-                    });
-                }
-            });
-        """),
+        # Escape key handler for the dialog
+        hx_on="keydown: if(event.key === 'Escape') htmx.ajax('POST', '/dismiss_modal', {target: 'body'})",
         id="modal-info",
         open=True  # This makes the dialog visible
     )
+
+
+@rt("/dismiss_modal")
+def dismiss_modal():
+    # Clear the modal placeholder to close the modal and show output
+    clear_modal = Div(id="modal-placeholder", hx_swap_oob="true")
+    # Load and display the output content
+    show_content = Div(
+        '<iframe src="/output_file" style="width:100%; height:80vh; border:0;" title="Generated biography"></iframe>',
+        id="info-display", 
+        hx_swap_oob="true"
+    )
+    return clear_modal, show_content
+
 
 # 5. The route that handles the form submission
 @rt("/submit")
@@ -357,7 +360,12 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
         Div(cls="spinner"),
         H3("Generating your biography..."),
         P("This may take a moment. Please wait."),
-        cls="loading-container"
+        cls="loading-container",
+        hx_post="/process",
+        hx_trigger="load",        
+        hx_vals=f'{{"name": "{name}", "job": "{job}", "place": "{place}", "photo_path": "{temp_photo_path}"}}',
+        hx_target="#info-display",
+        hx_swap="innerHTML"
     )
     
     # Close the modal using out-of-band swap - replace with empty div
@@ -366,23 +374,7 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
     # Also clear the modal placeholder
     clear_modal_placeholder = Div(id="modal-placeholder", hx_swap_oob="true")
     
-    # Start the processing in the background by triggering another request
-    trigger_processing = Script(f"""
-        setTimeout(function() {{
-            htmx.ajax('POST', '/process', {{
-                values: {{
-                    name: '{name}',
-                    job: '{job}',
-                    place: '{place}',
-                    photo_path: '{temp_photo_path}'
-                }},
-                target: '#info-display',
-                swap: 'innerHTML'
-            }});
-        }}, 500);
-    """)
-    
-    return loading_display, closed_modal, clear_modal_placeholder, trigger_processing
+    return loading_display, closed_modal, clear_modal_placeholder
 
 # 6. The route that handles the actual processing
 @rt("/process") 
