@@ -278,11 +278,9 @@ def start_portrait_generation(photo_path: str, image_prompt: str)-> tuple[str, B
     The actual image generation happens in background.
     """
     # Upload photo and start generation (these are quick)
-    # photo_url = upload_photo(photo_path)
-    # request_id = call_generate_image(photo_url, image_prompt)
+    photo_url = upload_photo(photo_path)
+    request_id = call_generate_image(photo_url, image_prompt)
     
-    # test value
-    request_id = "1ed7f9893be14be9aa1f6dfec4f5b926"
     # Start the polling and download in background
     btask = BackgroundTask(complete_portrait_generation, request_id=request_id)
     return request_id, btask
@@ -563,10 +561,10 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         llm_prompt, image_prompt = prepare_prompt(name, job, place)
         logger.info(f"Generated prompts for {name}, starting portrait generation")
         
-        # html_out = await call_anthropic(llm_prompt)
-        # out = cleanup_html_output(html_out)
-        # with open("output.html", "w") as f:
-        #     f.write(out)
+        html_out = await call_anthropic(llm_prompt)
+        out = cleanup_html_output(html_out)
+        with open("output.html", "w") as f:
+            f.write(out)
 
         # Start portrait image generation in background and get request_id
         request_id, bck_task = start_portrait_generation(photo_path, image_prompt)
