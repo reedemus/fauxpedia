@@ -3,6 +3,7 @@ from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
 from bs4 import BeautifulSoup
 from fasthtml.common import *
+from starlette.background import BackgroundTask
 
 # Environment variables
 load_dotenv(find_dotenv())
@@ -120,7 +121,7 @@ def call_generate_image(face_image_url: str, prompt: str) -> str:
     return return_val
 
 
-async def poll_generated_result(request_id: str) -> str:
+def poll_generated_result(request_id: str) -> str:
     """Poll for the result of the generated image/video from request id.
     Returns url or base64 string.
     """
@@ -150,11 +151,11 @@ async def poll_generated_result(request_id: str) -> str:
         else:
             logger.error(f"Error: {response.status_code}, {response.text}")
             break
-        await asyncio.sleep(2)
+        time.sleep(1)
     return return_val
 
 
-async def download_generated_result(request_id: str, url: str) -> str:
+def download_generated_result(request_id: str, url: str) -> str:
     """Download generated image/video from url.
     Returns local path of saved image/video"""
     saved_image_path = f"assets/{request_id}.jpeg"
@@ -173,8 +174,7 @@ async def download_generated_result(request_id: str, url: str) -> str:
             logger.info(f"Saved generated image to {saved_image_path}")
 
     elif ".jpeg" in url:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url)
+            response = httpx.get(url)
             response.raise_for_status()
             with open(saved_image_path, 'wb') as f:
                 f.write(response.content)
@@ -182,8 +182,7 @@ async def download_generated_result(request_id: str, url: str) -> str:
                 logger.info(f"Saved generated image to {saved_image_path}")
 
     elif ".mp4" in url:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url)
+            response = httpx.get(url)
             response.raise_for_status()
             with open(saved_video_path, 'wb') as f:
                 f.write(response.content)
@@ -228,9 +227,12 @@ def call_sora_video(image_path: str, scene_prompt: str) -> str:
     return out_path
 
 
-def portrait_reload(id):
+def portrait_reload(id: str):
+    """Update the portrait image in output.html and trigger UI refresh"""
     if os.path.exists(f"assets/{id}.jpeg"):
-        # Open output.html and replace the image src using sync file operations (fine in FastHTML)
+        logger.info(f"Found generated image for {id}, updating output.html")
+        
+        # Open output.html and replace the image src using sync file operations
         with open("output.html", "r+") as file:
             html_content = file.read()
             soup = BeautifulSoup(html_content, 'html.parser')
@@ -239,54 +241,67 @@ def portrait_reload(id):
             portrait_img = soup.find('img', id='portrait-image')
             if portrait_img:
                 portrait_img['src'] = f"assets/{id}.jpeg"
+                logger.info(f"Updated image src to assets/{id}.jpeg")
                 
                 file.seek(0)
                 file.write(str(soup))
                 file.truncate()
-
-                # Show the iframe by adding timestamp to force reload
+                logger.info("Successfully updated output.html")
+                
+                # Return elements for immediate UI update
+                # Update the iframe src to force refresh with cache busting
                 timestamp = int(time.time())
+                
+                # Create updated iframe element
                 show_iframe = Iframe(
-                    src=f"/output_file?v={timestamp}",  # Cache busting 
+                    src=f"/output_file?v={timestamp}",
                     style="width:100%; height:80vh; border:0; display:block;",
                     title="Generated biography",
-                    id="content-iframe",
-                    hx_swap_oob="true"
+                    id="content-iframe"
                 )
-                return show_iframe
+                
+                # Remove the polling element since we're done
+                stop_polling = Div(id="portrait-poller", style="display:none;", hx_swap_oob="true")
+                
+                return show_iframe, stop_polling
             else:
-                logger.warning("Portrait image element not found in HTML")
+                logger.warning("Portrait image element not found in output.html")
+                return Div("Portrait image element not found", id="portrait-poller", style="display:none;", hx_swap_oob="true")
     else:
-        # make post request to self every second
-        return Img(id="portrait-image", src=f"assets/portrait.jpg",
-                hx_post=f"/portrait_img/{id}",
-                hx_trigger='every 1s', hx_swap='innerHTML')
+        logger.info(f"Generated image for {id} not found yet, continuing to poll")
+        # Return empty div to continue polling
+        return Div(id="portrait-poller", hx_swap_oob="true")
 
-async def start_portrait_generation(photo_path: str, image_prompt: str) -> str:
+def start_portrait_generation(photo_path: str, image_prompt: str)-> tuple[str, BackgroundTask]:
     """
     Start portrait generation and return request_id immediately.
     The actual image generation happens in background.
     """
     # Upload photo and start generation (these are quick)
-    photo_url = upload_photo(photo_path)
-    request_id = call_generate_image(photo_url, image_prompt)
+    # photo_url = upload_photo(photo_path)
+    # request_id = call_generate_image(photo_url, image_prompt)
     
+    # test value
+    request_id = "1ed7f9893be14be9aa1f6dfec4f5b926"
     # Start the polling and download in background
-    asyncio.create_task(complete_portrait_generation(request_id))
-    
-    return request_id
+    btask = BackgroundTask(complete_portrait_generation, request_id=request_id)
+    return request_id, btask
 
-async def complete_portrait_generation(request_id: str):
+def complete_portrait_generation(request_id: str):
     """
     Complete the portrait generation in background.
     Polls for result and downloads when ready.
-    The portrait_reload function handles the HTML update and iframe refresh.
+    Triggers immediate UI update when generation is complete.
     """
     try:
-        download_url = await poll_generated_result(request_id)
-        await download_generated_result(request_id, download_url)
+        download_url = poll_generated_result(request_id)
+        download_generated_result(request_id, download_url)
         logger.info(f"Portrait generation completed for request_id: {request_id}")
-        # Note: portrait_reload() will handle updating the HTML and iframe when polled
+        
+        # Trigger immediate UI update by calling portrait_reload to update the HTML
+        portrait_reload(request_id)
+        
+        logger.info(f"UI update triggered for request_id: {request_id}")
     except Exception as e:
         logger.error(f"Background portrait generation failed for {request_id}: {str(e)}")
 
@@ -335,7 +350,10 @@ style = Style("""
 app, rt = fast_app(hdrs=(style,))
 
 @rt("/portrait_img/{id}")
-def get_portrait_img(id:int): return portrait_reload(id)
+def get_portrait_img(id: str):
+    logger.info(f"Received HTMX polling request for portrait_id: {id}")
+    result = portrait_reload(id)
+    return result
 
 @rt("/")
 def index():
@@ -543,17 +561,20 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
     try:
         # Call the LLM to generate the biography and image prompt
         llm_prompt, image_prompt = prepare_prompt(name, job, place)
-        html_out = await call_anthropic(llm_prompt)
-        out = cleanup_html_output(html_out)
-        with open("output.html", "w") as f:
-            f.write(out)
+        logger.info(f"Generated prompts for {name}, starting portrait generation")
+        
+        # html_out = await call_anthropic(llm_prompt)
+        # out = cleanup_html_output(html_out)
+        # with open("output.html", "w") as f:
+        #     f.write(out)
 
-        # Start portrait image generation in background and get request_id 
-        request_id = await start_portrait_generation(photo_path, image_prompt)
+        # Start portrait image generation in background and get request_id
+        request_id, bck_task = start_portrait_generation(photo_path, image_prompt)
+        logger.info(f"Started portrait generation with request_id: {request_id}")
         
         # Return updates to show the iframe immediately with the placeholder image
         show_iframe = Iframe(
-            src="/output_file", 
+            src="/output_file",
             style="width:100%; height:80vh; border:0; display:block;",
             title="Generated biography",
             id="content-iframe",
@@ -566,17 +587,20 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         )
         
         # Add polling element that uses your existing portrait_img route
+        # Make it visible for proper HTMX operation and add explicit target
         portrait_poller = Div(
+            "🔄 Portrait generation in progress...",
+            "⏱️ Checking every second...",
             id="portrait-poller",
             hx_post=f"/portrait_img/{request_id}",
-            hx_trigger="every 2s",
-            hx_target="#content-iframe",
-            hx_swap="outerHTML",
-            style="display:none;",
-            hx_swap_oob="true"
+            hx_trigger="every 1s",  # Increased interval to reduce server load
+            hx_target="#portrait-poller",  # Explicit target for the response
+            hx_swap="innerHTML",
+            style="background-color: #f0f8ff; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px;"
         )
         
-        return show_iframe, hide_info, portrait_poller
+        logger.info("Returning UI elements with polling setup")
+        return show_iframe, hide_info, portrait_poller, bck_task
 
     except Exception as e:
         logger.error(f"Error processing form: {str(e)}")
@@ -660,4 +684,4 @@ def output_file():
         )
         return show_message, hide_iframe
 
-serve()
+serve(port=5002)
