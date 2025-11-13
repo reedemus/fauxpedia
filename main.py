@@ -13,10 +13,6 @@ logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.
 logger = logging.getLogger(__name__)
 # gen_video_api_key = os.environ.get("SORA_API_KEY")
 
-# Delete existing wiki "output.html" if exists
-if "output.html" in os.listdir(os.curdir):
-    os.remove("output.html")
-
 
 ## MODEL CALLS ##
 def prepare_prompt(name: str, job: str, place: str) -> tuple[str, str]:
@@ -293,6 +289,14 @@ def index():
         id="info-display"
     )
     
+    # Hidden iframe that will be shown when content is ready
+    content_iframe = Iframe(
+        src="/output_file", 
+        style="width:100%; height:80vh; border:0; display:none;", 
+        title="Generated biography",
+        id="content-iframe"
+    )
+    
     # This is an empty placeholder where the modal will be loaded
     modal_placeholder = Div(id="modal-placeholder")
 
@@ -301,6 +305,7 @@ def index():
     return Titled("Create Your Fictional Wikipedia",
         Container(
             info_placeholder,
+            content_iframe,
             start_btn,
             modal_placeholder
         )
@@ -315,7 +320,7 @@ def open_modal():
         Article(
             H3("Enter Your Details"),
             Form(
-                Input(name="name", placeholder="Name", required=True),
+                Input(name="name", placeholder="Name", required=True, autofocus=True),
                 Input(name="job", placeholder="Job", required=True),
                 Input(name="place", placeholder="The place/environment of where you work", required=True),
                 Input(name="photo", placeholder="photo of you with clear face", type="file", accept="image/*", required=True),
@@ -327,8 +332,9 @@ def open_modal():
                 enctype="multipart/form-data"  # Required for file uploads
             )
         ),
-        # Escape key handler for the dialog
-        hx_on="keydown: if(event.key === 'Escape') htmx.ajax('POST', '/dismiss_modal', {target: 'body'})",
+        # Pure FastHTML escape key handling - no JavaScript needed!
+        hx_post="/dismiss_modal",
+        hx_trigger="keydown[key=='Escape'] from:body",
         id="modal-info",
         open=True  # This makes the dialog visible
     )
@@ -336,15 +342,26 @@ def open_modal():
 
 @rt("/dismiss_modal")
 def dismiss_modal():
-    # Clear the modal placeholder to close the modal and show output
+    # Clear the modal placeholder to close the modal
     clear_modal = Div(id="modal-placeholder", hx_swap_oob="true")
-    # Load and display the output content
-    show_content = Div(
-        '<iframe src="/output_file" style="width:100%; height:80vh; border:0;" title="Generated biography"></iframe>',
+    
+    # Hide the info display
+    hide_info = Div(
+        style="display:none;",
         id="info-display", 
         hx_swap_oob="true"
     )
-    return clear_modal, show_content
+    
+    # Show the iframe
+    show_iframe = Iframe(
+        src="/output_file", 
+        style="width:100%; height:80vh; border:0; display:block;",
+        title="Generated biography",
+        id="content-iframe",
+        hx_swap_oob="true"
+    )
+    
+    return clear_modal, hide_info, show_iframe
 
 
 # 5. The route that handles the form submission
@@ -403,11 +420,20 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
             file.seek(0) # reset to beginning to overwrite
             file.write(updated_html)
             file.truncate()
-        # Return an iframe so the full generated page (including its <head>
-        # and <style>) is shown in an isolated document context; this prevents
-        # the root app's styles from overriding the generated page's styles.
-        iframe_html = '<iframe src="/output_file" style="width:100%; height:80vh; border:0;" title="Generated biography"></iframe>'
-        return iframe_html
+        # Return updates to show the iframe and hide the info display
+        show_iframe = Iframe(
+            src="/output_file", 
+            style="width:100%; height:80vh; border:0; display:block;",
+            title="Generated biography",
+            id="content-iframe",
+            hx_swap_oob="true"
+        )
+        hide_info = Div(
+            style="display:none;",
+            id="info-display",
+            hx_swap_oob="true"
+        )
+        return show_iframe, hide_info
 
     except Exception as e:
         logger.error(f"Error processing form: {str(e)}")
@@ -415,28 +441,55 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
             H3("Error"),
             P(f"An error occurred while generating your biography: {str(e)}"),
             Button("Try Again", hx_get="/open_modal", hx_target="#modal-placeholder", hx_swap="innerHTML"),
-            cls="loading-container"
+            cls="loading-container",
+            id="info-display",
+            hx_swap_oob="true"
         )
 
 
-# Route to show output.html when escape key is pressed — return an iframe
+# Route to show output.html when escape key is pressed — show the iframe
 @rt("/show_output")
 def show_output():
-    iframe_html = '<iframe src="/output_file" style="width:100%; height:80vh; border:0;" title="Generated biography"></iframe>'
-    return iframe_html
+    # Hide the info display
+    hide_info = Div(
+        style="display:none;",
+        id="info-display", 
+        hx_swap_oob="true"
+    )
+    
+    # Show the iframe
+    show_iframe = Iframe(
+        src="/output_file", 
+        style="width:100%; height:80vh; border:0; display:block;",
+        title="Generated biography",
+        id="content-iframe",
+        hx_swap_oob="true"
+    )
+    
+    return hide_info, show_iframe
 
 
-# Serve the generated output.html as a full page so it can be embedded in an iframe
 @rt("/output_file")
 def output_file():
     try:
         return File("output.html")
     except FileNotFoundError:
-        return Div(
+        # If no content exists yet, show message in info display and keep iframe hidden
+        show_message = Div(
             H3("No Content Yet"),
-            P("No biography has been generated yet. Please fill out the form to create one."),
-            Button("Start", hx_get="/open_modal", hx_target="#modal-placeholder", hx_swap="innerHTML"),
-            cls="loading-container"
+            P("No biography has been generated yet. Please use the Start button below to create one."),
+            cls="loading-container",
+            style="display:block;",
+            id="info-display",
+            hx_swap_oob="true"
         )
+        hide_iframe = Iframe(
+            src="/output_file", 
+            style="width:100%; height:80vh; border:0; display:none;",
+            title="Generated biography",
+            id="content-iframe",
+            hx_swap_oob="true"
+        )
+        return show_message, hide_iframe
 
 serve()
