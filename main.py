@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 ## MODEL CALLS ##
 def expand_prompt(name: str, job: str, place: str) -> str:
     llm_prompt = f"""Expand the prompt for a video generation model to include the subject, scene and motion: \
-        the person in the image is a highly successful and famous {job} working at {place}"""
+        the person in the image is highly successful and famous {job} working at {place}"""
     return llm_prompt
 
 def prepare_prompt(name: str, job: str, place: str) -> tuple[str, str]:
@@ -441,6 +441,19 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
     clear_modal_placeholder = Div(id="modal-placeholder", hx_swap_oob="true")
     
     return loading_display, closed_modal, clear_modal_placeholder
+
+
+@rt('/video_status')
+def video_status(vid: str):
+    """Simple status endpoint polled by the generated output page.
+    Returns JSON: {ready: bool, url: str}
+    """
+    video_path = os.path.join('assets', f"{vid}.mp4")
+    if os.path.exists(video_path):
+        # return a URL relative to the app root so the iframe can load it
+        return {"ready": True, "url": f"assets/{vid}.mp4"}
+    else:
+        return {"ready": False}
 
 
 @rt("/process") 
