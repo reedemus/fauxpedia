@@ -1,4 +1,4 @@
-import os, json, time, base64, re, tempfile, logging, asyncio, httpx
+import os, json, time, base64, re, tempfile, logging, asyncio, time, httpx
 from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
 from bs4 import BeautifulSoup
@@ -13,7 +13,6 @@ gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
 logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 # gen_video_api_key = os.environ.get("SORA_API_KEY")
-
 
 ## MODEL CALLS ##
 def prepare_prompt(name: str, job: str, place: str) -> tuple[str, str]:
@@ -121,7 +120,7 @@ def call_generate_image(face_image_url: str, prompt: str) -> str:
     return return_val
 
 
-def poll_generated_result(request_id: str) -> str:
+async def poll_generated_result(request_id: str) -> str:
     """Poll for the result of the generated image/video from request id.
     Returns url or base64 string.
     """
@@ -131,12 +130,13 @@ def poll_generated_result(request_id: str) -> str:
 
     # Poll for results
     begin = time.time()
-    while True:
+    status = "in progress"
+
+    while status != "completed":
         response = httpx.get(url, headers=headers)
         if response.status_code == 200:
             result_json = response.json()["data"]
             status = result_json["status"]
-
             if status == "completed":
                 end = time.time()
                 logger.info(f"Task completed in {end - begin} seconds.")
@@ -150,14 +150,14 @@ def poll_generated_result(request_id: str) -> str:
         else:
             logger.error(f"Error: {response.status_code}, {response.text}")
             break
-        time.sleep(2)
+        await asyncio.sleep(2)
     return return_val
 
 
 async def download_generated_result(request_id: str, url: str) -> str:
     """Download generated image/video from url.
     Returns local path of saved image/video"""
-    saved_image_path = f"assets/{request_id}.jpg"
+    saved_image_path = f"assets/{request_id}.jpeg"
     saved_video_path = f"assets/{request_id}.mp4"
     return_val = ""
 
@@ -210,7 +210,7 @@ def call_sora_video(image_path: str, scene_prompt: str) -> str:
         files = {"image": f}
         data = {"prompt": scene_prompt}
         headers = {"Authorization": f"Bearer {key}"}
-        resp = requests.post(url, files=files, data=data, headers=headers, timeout=180)
+        resp = httpx.post(url, files=files, data=data, headers=headers, timeout=180)
     resp.raise_for_status()
     content_type = resp.headers.get("Content-Type", "")
     out_path = tempfile.mktemp(suffix=".mp4")
@@ -227,6 +227,68 @@ def call_sora_video(image_path: str, scene_prompt: str) -> str:
 
     return out_path
 
+
+def portrait_reload(id):
+    if os.path.exists(f"assets/{id}.jpeg"):
+        # Open output.html and replace the image src using sync file operations (fine in FastHTML)
+        with open("output.html", "r+") as file:
+            html_content = file.read()
+            soup = BeautifulSoup(html_content, 'html.parser')
+        
+            # Find the portrait image element by ID and update it
+            portrait_img = soup.find('img', id='portrait-image')
+            if portrait_img:
+                portrait_img['src'] = f"assets/{id}.jpeg"
+                
+                file.seek(0)
+                file.write(str(soup))
+                file.truncate()
+
+                # Show the iframe by adding timestamp to force reload
+                timestamp = int(time.time())
+                show_iframe = Iframe(
+                    src=f"/output_file?v={timestamp}",  # Cache busting 
+                    style="width:100%; height:80vh; border:0; display:block;",
+                    title="Generated biography",
+                    id="content-iframe",
+                    hx_swap_oob="true"
+                )
+                return show_iframe
+            else:
+                logger.warning("Portrait image element not found in HTML")
+    else:
+        # make post request to self every second
+        return Img(id="portrait-image", src=f"assets/portrait.jpg",
+                hx_post=f"/portrait_img/{id}",
+                hx_trigger='every 1s', hx_swap='innerHTML')
+
+async def start_portrait_generation(photo_path: str, image_prompt: str) -> str:
+    """
+    Start portrait generation and return request_id immediately.
+    The actual image generation happens in background.
+    """
+    # Upload photo and start generation (these are quick)
+    photo_url = upload_photo(photo_path)
+    request_id = call_generate_image(photo_url, image_prompt)
+    
+    # Start the polling and download in background
+    asyncio.create_task(complete_portrait_generation(request_id))
+    
+    return request_id
+
+async def complete_portrait_generation(request_id: str):
+    """
+    Complete the portrait generation in background.
+    Polls for result and downloads when ready.
+    The portrait_reload function handles the HTML update and iframe refresh.
+    """
+    try:
+        download_url = await poll_generated_result(request_id)
+        await download_generated_result(request_id, download_url)
+        logger.info(f"Portrait generation completed for request_id: {request_id}")
+        # Note: portrait_reload() will handle updating the HTML and iframe when polled
+    except Exception as e:
+        logger.error(f"Background portrait generation failed for {request_id}: {str(e)}")
 
 ## VIEW ##
 
@@ -272,6 +334,9 @@ style = Style("""
 # Initialize the app, passing in our custom styles
 app, rt = fast_app(hdrs=(style,))
 
+@rt("/portrait_img/{id}")
+def get_portrait_img(id:int): return portrait_reload(id)
+
 @rt("/")
 def index():
     """
@@ -295,7 +360,7 @@ def index():
     # This is the placeholder where submitted info will appear
     info_placeholder = Div(
         P("Click 'Start' to enter your details."),
-        id="info-display"
+        id="info"
     )
     
     # Hidden iframe that will be shown when content is ready
@@ -347,7 +412,7 @@ def open_modal():
                 Button("Enter", type="submit"),
                 # Form attributes for HTMX
                 hx_post="/submit",
-                hx_target="#info-display", 
+                hx_target="#info", 
                 hx_swap="innerHTML",
                 enctype="multipart/form-data"  # Required for file uploads
             )
@@ -380,7 +445,7 @@ def dismiss_modal():
     # Hide the info display
     hide_info = Div(
         style="display:none;",
-        id="info-display", 
+        id="info", 
         hx_swap_oob="true"
     )
     
@@ -478,29 +543,10 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         with open("output.html", "w") as f:
             f.write(out)
 
-        # Upload the user photo to the generative image service
-        photo_url = upload_photo(photo_path)
-        request_id = call_generate_image(photo_url, image_prompt)
-        download_url = poll_generated_result(request_id)
-        image_path = await download_generated_result(request_id, download_url)
-
-        with open("output.html", "r") as file:
-            html_content = file.read()
+        # Start portrait image generation in background and get request_id 
+        request_id = await start_portrait_generation(photo_path, image_prompt)
         
-        # Parse HTML properly
-        soup = BeautifulSoup(html_content, 'html.parser')
-        
-        # Find the portrait image element by ID (more robust)
-        portrait_img = soup.find('img', id='portrait-image')
-        if portrait_img:
-            portrait_img['src'] = image_path
-            
-            # Write back the properly formatted HTML
-            with open("output.html", "w") as file:
-                file.write(str(soup))
-        else:
-            logger.warning("Portrait image element not found in HTML")
-        # Return updates to show the iframe and hide the info display
+        # Return updates to show the iframe immediately with the placeholder image
         show_iframe = Iframe(
             src="/output_file", 
             style="width:100%; height:80vh; border:0; display:block;",
@@ -510,18 +556,31 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         )
         hide_info = Div(
             style="display:none;",
-            id="info-display",
+            id="info",
             hx_swap_oob="true"
         )
-        return show_iframe, hide_info
+        
+        # Add polling element that uses your existing portrait_img route
+        portrait_poller = Div(
+            id="portrait-poller",
+            hx_post=f"/portrait_img/{request_id}",
+            hx_trigger="every 2s",
+            hx_target="#content-iframe",
+            hx_swap="outerHTML",
+            style="display:none;",
+            hx_swap_oob="true"
+        )
+        
+        return show_iframe, hide_info, portrait_poller
 
     except Exception as e:
         logger.error(f"Error processing form: {str(e)}")
         return Div(
             H3("Error"),
-            P(f"An error occurred while generating your biography: {str(e)}"),
+            P(f"An error occurred: {str(e)}."),
+            P("Try again by pressing the Start button."),
             cls="loading-container",
-            id="info-display",
+            id="info",
             hx_swap_oob="true"
         )
 
@@ -543,7 +602,7 @@ def show_output():
     # Hide the info display
     hide_info = Div(
         style="display:none;",
-        id="info-display", 
+        id="info", 
         hx_swap_oob="true"
     )
     
@@ -584,7 +643,7 @@ def output_file():
             P("No biography has been generated yet. Please use the Start button below to create one."),
             cls="loading-container",
             style="display:block;",
-            id="info-display",
+            id="info",
             hx_swap_oob="true"
         )
         hide_iframe = Iframe(
