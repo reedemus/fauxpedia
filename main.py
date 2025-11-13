@@ -495,7 +495,12 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
         cls="loading-container",
         hx_post="/process",
         hx_trigger="load",        
-        hx_vals=f'{{"name": "{name}", "job": "{job}", "place": "{place}", "photo_path": "{temp_photo_path}"}}',
+        hx_vals=json.dumps({
+            "name": name, 
+            "job": job, 
+            "place": place, 
+            "photo_path": temp_photo_path
+        }),
         hx_target="#info",
         hx_swap="innerHTML"
     )
