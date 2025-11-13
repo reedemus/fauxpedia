@@ -1,6 +1,7 @@
 import os, json, time, base64, re, tempfile, logging, asyncio, httpx
 from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
+from bs4 import BeautifulSoup
 from fasthtml.common import *
 
 # Environment variables
@@ -319,6 +320,7 @@ def index():
         )
     )
 
+
 @rt("/open_modal")
 def open_modal():
     """
@@ -441,6 +443,7 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
     
     return loading_display, closed_modal, clear_modal_placeholder
 
+
 @rt("/process") 
 async def process_form(name: str, job: str, place: str, photo_path: str):
     """
@@ -469,28 +472,35 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
     """
     try:
         # Call the LLM to generate the biography and image prompt
-        llm_prompt, image_prompt = prepare_prompt(name, job, place)
-        html_out = await call_anthropic(llm_prompt)
-        out = cleanup_html_output(html_out)
-        with open("output.html", "w") as f:
-            f.write(out)
+        # llm_prompt, image_prompt = prepare_prompt(name, job, place)
+        # html_out = await call_anthropic(llm_prompt)
+        # out = cleanup_html_output(html_out)
+        # with open("output.html", "w") as f:
+        #     f.write(out)
 
         # Upload the user photo to the generative image service
-        photo_url = upload_photo(photo_path)
-        request_id = call_generate_image(photo_url, image_prompt)
-        download_url = poll_generated_result(request_id)
-        image_path = await download_generated_result(request_id, download_url)
+        # photo_url = upload_photo(photo_path)
+        # request_id = call_generate_image(photo_url, image_prompt)
+        # download_url = poll_generated_result(request_id)
+        # image_path = await download_generated_result(request_id, download_url)
 
-        # Update the portrait image in output.html
-        with open("output.html", "r+") as file:
+        image_path = "assets/0.png"
+        with open("output.html", "r") as file:
             html_content = file.read()
-            updated_html = html_content.replace(
-                'id="portrait-image" src="assets/portrait.jpg"',
-                f'id="portrait-image" src="{image_path}"'
-            )
-            file.seek(0) # reset to beginning to overwrite
-            file.write(updated_html)
-            file.truncate()
+        
+        # Parse HTML properly
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Find the portrait image element by ID (more robust)
+        portrait_img = soup.find('img', id='portrait-image')
+        if portrait_img:
+            portrait_img['src'] = image_path
+            
+            # Write back the properly formatted HTML
+            with open("output.html", "w") as file:
+                file.write(str(soup))
+        else:
+            logger.warning("Portrait image element not found in HTML")
         # Return updates to show the iframe and hide the info display
         show_iframe = Iframe(
             src="/output_file", 
@@ -511,7 +521,6 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         return Div(
             H3("Error"),
             P(f"An error occurred while generating your biography: {str(e)}"),
-            Button("Try Again", hx_get="/open_modal", hx_target="#modal-placeholder", hx_swap="innerHTML"),
             cls="loading-container",
             id="info-display",
             hx_swap_oob="true"
