@@ -6,7 +6,7 @@ from fasthtml.common import *
 
 # Environment variables
 load_dotenv(find_dotenv())
-llm_api_key = os.environ.get("ANTHROPIC_API_KEY")
+llm_api_key = os.environ.get("OWN_ANTHROPIC_API_KEY")
 gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
 
 # Configure basic logging for this module
@@ -27,6 +27,7 @@ Create a fictional and funny wikipedia biography of {name} as a {job} from {plac
 The output format must be html and css in typical wikipedia format. Strictly no emojis in the output.
 Use the placeholder image named portrait.jpg in the assets folder from the current directory.
 The placeholder image is given by element id "portrait-image".
+Create a placeholder video identifier with id "portrait-video" in the assets folder from the current directory.
 Use the section headers below:
 - Early life
 - Career
