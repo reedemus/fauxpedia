@@ -472,19 +472,18 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
     """
     try:
         # Call the LLM to generate the biography and image prompt
-        # llm_prompt, image_prompt = prepare_prompt(name, job, place)
-        # html_out = await call_anthropic(llm_prompt)
-        # out = cleanup_html_output(html_out)
-        # with open("output.html", "w") as f:
-        #     f.write(out)
+        llm_prompt, image_prompt = prepare_prompt(name, job, place)
+        html_out = await call_anthropic(llm_prompt)
+        out = cleanup_html_output(html_out)
+        with open("output.html", "w") as f:
+            f.write(out)
 
         # Upload the user photo to the generative image service
-        # photo_url = upload_photo(photo_path)
-        # request_id = call_generate_image(photo_url, image_prompt)
-        # download_url = poll_generated_result(request_id)
-        # image_path = await download_generated_result(request_id, download_url)
+        photo_url = upload_photo(photo_path)
+        request_id = call_generate_image(photo_url, image_prompt)
+        download_url = poll_generated_result(request_id)
+        image_path = await download_generated_result(request_id, download_url)
 
-        image_path = "assets/0.png"
         with open("output.html", "r") as file:
             html_content = file.read()
         
