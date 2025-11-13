@@ -1,6 +1,7 @@
 import os, json, time, base64, re, tempfile, logging, asyncio, httpx
 from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
+from bs4 import BeautifulSoup
 from fasthtml.common import *
 
 # Environment variables
@@ -227,7 +228,7 @@ async def call_generate_video(image_path: str, scene_prompt: str) -> str:
 
 ## VIEW ##
 
-# 1. Custom styling for the fixed button and placeholders
+# Custom styling for the fixed button and placeholders
 # We use the Style tag, which FastHTML will place in the <head>
 style = Style("""
     /* This styles the 'Start' button */
@@ -266,13 +267,21 @@ style = Style("""
     }
 """)
 
-# 2. Initialize the app, passing in our custom styles
+# Initialize the app, passing in our custom styles
 app, rt = fast_app(hdrs=(style,))
 
-# 3. The main page route ("/")
 @rt("/")
 def index():
-    # This button is fixed to the bottom-center of the screen
+    """
+    Main landing page route that displays the application interface.
+    
+    Returns:
+        A titled page containing:
+        - Info display area for messages and loading states
+        - Hidden iframe for displaying generated Wikipedia content
+        - Fixed "Start" button at bottom center for opening the form modal
+        - Empty modal placeholder for dynamic modal loading
+    """
     start_btn = Button(
         "Start",
         id="start-btn",
@@ -287,6 +296,14 @@ def index():
         id="info-display"
     )
     
+    # Hidden iframe that will be shown when content is ready
+    content_iframe = Iframe(
+        src="/output_file", 
+        style="width:100%; height:80vh; border:0; display:none;", 
+        title="Generated biography",
+        id="content-iframe"
+    )
+    
     # This is an empty placeholder where the modal will be loaded
     modal_placeholder = Div(id="modal-placeholder")
 
@@ -295,56 +312,109 @@ def index():
     return Titled("Create Your Fictional Wikipedia",
         Container(
             info_placeholder,
+            content_iframe,
             start_btn,
             modal_placeholder
         )
     )
 
-# 4. The route that serves the popup modal
+
 @rt("/open_modal")
 def open_modal():
-    # We return a DialogX component, which is Pico's modal
-    # The 'open=True' attribute makes it visible immediately
+    """
+    Route that serves the user input modal dialog.
+    
+    Called via HTMX when the "Start" button is clicked. Creates and returns
+    a DialogX modal containing a form for user input.
+    
+    Returns:
+        DialogX modal with:
+        - Form fields for name, job, place, and photo upload
+        - Submit button that triggers form processing
+        - Escape key handler for modal dismissal
+        - Auto-focus on the name input field
+    """
     return DialogX(
         Article(
             H3("Enter Your Details"),
             Form(
-                Input(name="name", placeholder="Name", required=True),
+                Input(name="name", placeholder="Name", required=True, autofocus=True),
                 Input(name="job", placeholder="Job", required=True),
                 Input(name="place", placeholder="The place/environment of where you work", required=True),
-                Input(name="photo", placeholder="photo of you with clear face", type="file", accept="image/*", required=True),  # Added input for picture file
+                Input(name="photo", placeholder="photo of you with clear face", type="file", accept="image/*", required=True),
                 Button("Enter", type="submit"),
-                
-                # --- HTMX Form Configuration ---
-                # 1. POST the form data to the /submit route
+                # Form attributes for HTMX
                 hx_post="/submit",
-                # 2. Target multiple elements
-                hx_target="#info-display",
-                # 3. Replace the content 
-                hx_swap="innerHTML"
+                hx_target="#info-display", 
+                hx_swap="innerHTML",
+                enctype="multipart/form-data"  # Required for file uploads
             )
         ),
-        # Add escape key handler to close modal and show output.html
-        Script("""
-            document.addEventListener('keydown', function(e) {
-                if (e.key === 'Escape') {
-                    // Close modal
-                    document.getElementById('modal-info').remove();
-                    // Load and display output.html
-                    htmx.ajax('GET', '/show_output', {
-                        target: '#info-display',
-                        swap: 'innerHTML'
-                    });
-                }
-            });
-        """),
+        # Pure FastHTML escape key handling - no JavaScript needed!
+        hx_post="/dismiss_modal",
+        hx_trigger="keydown[key=='Escape'] from:body",
         id="modal-info",
         open=True  # This makes the dialog visible
     )
 
-# 5. The route that handles the form submission
+
+@rt("/dismiss_modal")
+def dismiss_modal():
+    """
+    Route that handles modal dismissal via escape key.
+    
+    Called when user presses the Escape key while modal is open.
+    Performs multiple out-of-band swaps to clean up the UI state.
+    
+    Returns:
+        Multiple elements with out-of-band swaps:
+        - Clears the modal placeholder (closes modal)
+        - Hides the info display area
+        - Shows the iframe (attempts to display any existing content)
+    """
+    # Clear the modal placeholder to close the modal
+    clear_modal = Div(id="modal-placeholder", hx_swap_oob="true")
+    
+    # Hide the info display
+    hide_info = Div(
+        style="display:none;",
+        id="info-display", 
+        hx_swap_oob="true"
+    )
+    
+    # Show the iframe
+    show_iframe = Iframe(
+        src="/output_file", 
+        style="width:100%; height:80vh; border:0; display:block;",
+        title="Generated biography",
+        id="content-iframe",
+        hx_swap_oob="true"
+    )
+    
+    return clear_modal, hide_info, show_iframe
+
+
 @rt("/submit")
 async def submit_form(name: str, job: str, place: str, photo: UploadFile):
+    """
+    Route that handles form submission and initiates biography generation.
+    
+    Receives user input from the modal form, saves the uploaded photo to a
+    temporary file, and immediately returns a loading spinner while triggering
+    background processing.
+    
+    Args:
+        name (str): Person's name for the biography
+        job (str): Person's profession/job title
+        place (str): Work environment or location
+        photo (UploadFile): User's photo file for AI image generation
+    
+    Returns:
+        Multiple elements with out-of-band swaps:
+        - Loading spinner with auto-trigger to start processing
+        - Closed modal elements to dismiss the form
+        - Clears modal placeholder
+    """
     # Save the uploaded photo to a temporary file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_photo:
         temp_photo.write(await photo.read())
@@ -355,7 +425,12 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
         Div(cls="spinner"),
         H3("Generating your biography..."),
         P("This may take a moment. Please wait."),
-        cls="loading-container"
+        cls="loading-container",
+        hx_post="/process",
+        hx_trigger="load",        
+        hx_vals=f'{{"name": "{name}", "job": "{job}", "place": "{place}", "photo_path": "{temp_photo_path}"}}',
+        hx_target="#info-display",
+        hx_swap="innerHTML"
     )
     
     # Close the modal using out-of-band swap - replace with empty div
@@ -364,39 +439,35 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
     # Also clear the modal placeholder
     clear_modal_placeholder = Div(id="modal-placeholder", hx_swap_oob="true")
     
-    # Start the processing in the background by triggering another request
-    trigger_processing = Script(f"""
-        setTimeout(function() {{
-            htmx.ajax('POST', '/process', {{
-                values: {{
-                    name: '{name}',
-                    job: '{job}',
-                    place: '{place}',
-                    photo_path: '{temp_photo_path}'
-                }},
-                target: '#info-display',
-                swap: 'innerHTML'
-            }});
-        }}, 500);
-    """)
-    
-    return loading_display, closed_modal, clear_modal_placeholder, trigger_processing
+    return loading_display, closed_modal, clear_modal_placeholder
 
-@rt('/video_status')
-def video_status(vid: str):
-    """Simple status endpoint polled by the generated output page.
-    Returns JSON: {ready: bool, url: str}
-    """
-    video_path = os.path.join('assets', f"{vid}.mp4")
-    if os.path.exists(video_path):
-        # return a URL relative to the app root so the iframe can load it
-        return {"ready": True, "url": f"assets/{vid}.mp4"}
-    else:
-        return {"ready": False}
 
-# 6. The route that handles the actual processing
 @rt("/process") 
 async def process_form(name: str, job: str, place: str, photo_path: str):
+    """
+    Route that performs the actual biography generation and AI image processing.
+    
+    Called automatically by HTMX after the loading spinner is displayed.
+    Orchestrates the complete workflow: LLM text generation, image upload,
+    AI image generation, and file updates.
+    
+    Args:
+        name (str): Person's name for the biography
+        job (str): Person's profession/job title  
+        place (str): Work environment or location
+        photo_path (str): Path to the temporary photo file
+    
+    Returns:
+        On success: Updates to show iframe with generated content
+        On error: Error message with retry button
+        
+    Workflow:
+        1. Generate Wikipedia biography text using Anthropic LLM
+        2. Upload user photo to WaveSpeed AI service
+        3. Generate AI image based on user photo and job context
+        4. Update output.html with generated content and new image
+        5. Display results in iframe
+    """
     try:
         # Call the LLM to generate the biography and image prompt
         llm_prompt, image_prompt, video_prompt = prepare_prompt(name, job, place)
@@ -411,114 +482,116 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         # download_url = poll_generated_result(request_id)
         # image_path = await download_generated_result(request_id, download_url)
 
-        # # Update the portrait image in output.html
-        image_path = "assets/portrait.jpg"
-        with open("output.html", "r+") as file:
+        with open("output.html", "r") as file:
             html_content = file.read()
-            updated_html = html_content.replace(
-                'id="portrait-image" src="assets/portrait.jpg"',
-                f'id="portrait-image" src="{image_path}"'
-            )
-            file.seek(0) # reset to beginning to overwrite
-            file.write(updated_html)
-            file.truncate()
-
-        image_id = "https://d1q70pf5vjeyhc.cloudfront.net/predictions/605d60a14dc04800b3a9da3cfffdc760/1.jpeg"
-        video_request_id = await call_generate_video(image_id, video_prompt)
-        download_url = poll_generated_result(video_request_id)
-        await download_generated_result(video_request_id, download_url)
-
-        # If we have a request_id (image/video task id), inject a small polling script
-        # that will check the /video_status endpoint and replace the image with the video when ready.
-        if video_request_id:
-            # Build the polling script using a placeholder replacement instead of
-            # the % operator. The original used "%s" % (video_request_id,)
-            # but the script contains literal percent signs (eg '100%') which
-            # confuse Python's % formatting and raise "not enough arguments"
-            # or similar formatting errors. We use json.dumps() to safely
-            # produce a quoted JS string and replace a unique placeholder.
-            poll_template = """
-<script>
-(function() {
-    var vidId = PLACEHOLDER_VID_ID;
-    function check() {
-        fetch('/video_status?vid=' + encodeURIComponent(vidId))
-            .then(function(r) { return r.json(); })
-            .then(function(j) {
-                if(j.ready) {
-                    try {
-                        var img = document.getElementById('portrait-image');
-                        if(!img) return;
-                        var video = document.createElement('video');
-                        video.setAttribute('autoplay', '');
-                        video.setAttribute('loop', '');
-                        video.setAttribute('muted', '');
-                        video.setAttribute('playsinline', '');
-                        video.style.maxWidth = '100%';
-                        video.style.height = 'auto';
-                        var source = document.createElement('source');
-                        source.src = j.url;
-                        source.type = 'video/mp4';
-                        video.appendChild(source);
-                        img.parentNode.replaceChild(video, img);
-                    } catch(e) { console.error(e); }
-                } else {
-                    setTimeout(check, 2000);
-                }
-            }).catch(function() { setTimeout(check, 2000); });
-    }
-    // start after a short delay so the iframe content has a chance to render
-    setTimeout(check, 1500);
-})();
-</script>
-"""
-
-        # Use json.dumps to produce a safe JS string (properly quoted/escaped)
-        poll_script = poll_template.replace("PLACEHOLDER_VID_ID", json.dumps(video_request_id))
-
-        with open("output.html", "r+") as file:
-            html_content = file.read()
-            # Insert poll_script before </body> if present, otherwise append
-            if re.search(r'</body>', html_content, flags=re.IGNORECASE):
-                    html_content = re.sub(r'</body>', poll_script + '</body>', html_content, flags=re.IGNORECASE)
-            else:
-                html_content = html_content + poll_script
-            file.seek(0) # reset to beginning to overwrite
-            file.write(html_content)
-            file.truncate()
-
-            # Return an iframe so the full generated page is shown immediately
-            iframe_html = '<iframe src="/output_file" style="width:100%; height:80vh; border:0;" title="Generated biography"></iframe>'
-            return iframe_html
+        
+        # Parse HTML properly
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Find the portrait image element by ID (more robust)
+        portrait_img = soup.find('img', id='portrait-image')
+        if portrait_img:
+            portrait_img['src'] = image_path
+            
+            # Write back the properly formatted HTML
+            with open("output.html", "w") as file:
+                file.write(str(soup))
+        else:
+            logger.warning("Portrait image element not found in HTML")
+        # Return updates to show the iframe and hide the info display
+        show_iframe = Iframe(
+            src="/output_file", 
+            style="width:100%; height:80vh; border:0; display:block;",
+            title="Generated biography",
+            id="content-iframe",
+            hx_swap_oob="true"
+        )
+        hide_info = Div(
+            style="display:none;",
+            id="info-display",
+            hx_swap_oob="true"
+        )
+        return show_iframe, hide_info
 
     except Exception as e:
         logger.error(f"Error processing form: {str(e)}")
         return Div(
             H3("Error"),
             P(f"An error occurred while generating your biography: {str(e)}"),
-            Button("Try Again", hx_get="/open_modal", hx_target="#modal-placeholder", hx_swap="innerHTML"),
-            cls="loading-container"
+            cls="loading-container",
+            id="info-display",
+            hx_swap_oob="true"
         )
 
 
-# Route to show output.html when escape key is pressed — return an iframe
 @rt("/show_output")
 def show_output():
-    iframe_html = '<iframe src="/output_file" style="width:100%; height:80vh; border:0;" title="Generated biography"></iframe>'
-    return iframe_html
+    """
+    Route that switches the view to display generated content.
+    
+    Hides the info display area and shows the iframe containing
+    the generated Wikipedia biography. Used for manually displaying
+    content when it already exists.
+    
+    Returns:
+        Multiple elements with out-of-band swaps:
+        - Hides the info display area
+        - Shows the iframe with generated content
+    """
+    # Hide the info display
+    hide_info = Div(
+        style="display:none;",
+        id="info-display", 
+        hx_swap_oob="true"
+    )
+    
+    # Show the iframe
+    show_iframe = Iframe(
+        src="/output_file", 
+        style="width:100%; height:80vh; border:0; display:block;",
+        title="Generated biography",
+        id="content-iframe",
+        hx_swap_oob="true"
+    )
+    
+    return hide_info, show_iframe
 
 
-# Serve the generated output.html as a full page so it can be embedded in an iframe
 @rt("/output_file")
 def output_file():
+    """
+    Route that serves the generated Wikipedia biography HTML file.
+    
+    Attempts to serve the output.html file containing the generated biography.
+    If the file doesn't exist (no content has been generated yet), returns
+    a helpful message and manages UI state.
+    
+    Returns:
+        On success: The generated HTML file (output.html)
+        On FileNotFoundError: 
+        - Message indicating no content exists yet
+        - Hides the iframe to prevent loading errors
+        - Directs user to use the Start button
+    """
     try:
         return File("output.html")
     except FileNotFoundError:
-        return Div(
+        # If no content exists yet, show message in info display and keep iframe hidden
+        show_message = Div(
             H3("No Content Yet"),
-            P("No biography has been generated yet. Please fill out the form to create one."),
-            Button("Start", hx_get="/open_modal", hx_target="#modal-placeholder", hx_swap="innerHTML"),
-            cls="loading-container"
+            P("No biography has been generated yet. Please use the Start button below to create one."),
+            cls="loading-container",
+            style="display:block;",
+            id="info-display",
+            hx_swap_oob="true"
         )
+        hide_iframe = Iframe(
+            src="/output_file", 
+            style="width:100%; height:80vh; border:0; display:none;",
+            title="Generated biography",
+            id="content-iframe",
+            hx_swap_oob="true"
+        )
+        return show_message, hide_iframe
 
 serve()
