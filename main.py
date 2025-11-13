@@ -229,7 +229,7 @@ def call_sora_video(image_path: str, scene_prompt: str) -> str:
 
 ## VIEW ##
 
-# 1. Custom styling for the fixed button and placeholders
+# Custom styling for the fixed button and placeholders
 # We use the Style tag, which FastHTML will place in the <head>
 style = Style("""
     /* This styles the 'Start' button */
@@ -268,13 +268,21 @@ style = Style("""
     }
 """)
 
-# 2. Initialize the app, passing in our custom styles
+# Initialize the app, passing in our custom styles
 app, rt = fast_app(hdrs=(style,))
 
-# 3. The main page route ("/")
 @rt("/")
 def index():
-    # This button is fixed to the bottom-center of the screen
+    """
+    Main landing page route that displays the application interface.
+    
+    Returns:
+        A titled page containing:
+        - Info display area for messages and loading states
+        - Hidden iframe for displaying generated Wikipedia content
+        - Fixed "Start" button at bottom center for opening the form modal
+        - Empty modal placeholder for dynamic modal loading
+    """
     start_btn = Button(
         "Start",
         id="start-btn",
@@ -311,11 +319,21 @@ def index():
         )
     )
 
-# 4. The route that serves the popup modal
 @rt("/open_modal")
 def open_modal():
-    # We return a DialogX component, which is Pico's modal
-    # The 'open=True' attribute makes it visible immediately
+    """
+    Route that serves the user input modal dialog.
+    
+    Called via HTMX when the "Start" button is clicked. Creates and returns
+    a DialogX modal containing a form for user input.
+    
+    Returns:
+        DialogX modal with:
+        - Form fields for name, job, place, and photo upload
+        - Submit button that triggers form processing
+        - Escape key handler for modal dismissal
+        - Auto-focus on the name input field
+    """
     return DialogX(
         Article(
             H3("Enter Your Details"),
@@ -342,6 +360,18 @@ def open_modal():
 
 @rt("/dismiss_modal")
 def dismiss_modal():
+    """
+    Route that handles modal dismissal via escape key.
+    
+    Called when user presses the Escape key while modal is open.
+    Performs multiple out-of-band swaps to clean up the UI state.
+    
+    Returns:
+        Multiple elements with out-of-band swaps:
+        - Clears the modal placeholder (closes modal)
+        - Hides the info display area
+        - Shows the iframe (attempts to display any existing content)
+    """
     # Clear the modal placeholder to close the modal
     clear_modal = Div(id="modal-placeholder", hx_swap_oob="true")
     
@@ -364,9 +394,27 @@ def dismiss_modal():
     return clear_modal, hide_info, show_iframe
 
 
-# 5. The route that handles the form submission
 @rt("/submit")
 async def submit_form(name: str, job: str, place: str, photo: UploadFile):
+    """
+    Route that handles form submission and initiates biography generation.
+    
+    Receives user input from the modal form, saves the uploaded photo to a
+    temporary file, and immediately returns a loading spinner while triggering
+    background processing.
+    
+    Args:
+        name (str): Person's name for the biography
+        job (str): Person's profession/job title
+        place (str): Work environment or location
+        photo (UploadFile): User's photo file for AI image generation
+    
+    Returns:
+        Multiple elements with out-of-band swaps:
+        - Loading spinner with auto-trigger to start processing
+        - Closed modal elements to dismiss the form
+        - Clears modal placeholder
+    """
     # Save the uploaded photo to a temporary file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_photo:
         temp_photo.write(await photo.read())
@@ -393,9 +441,32 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
     
     return loading_display, closed_modal, clear_modal_placeholder
 
-# 6. The route that handles the actual processing
 @rt("/process") 
 async def process_form(name: str, job: str, place: str, photo_path: str):
+    """
+    Route that performs the actual biography generation and AI image processing.
+    
+    Called automatically by HTMX after the loading spinner is displayed.
+    Orchestrates the complete workflow: LLM text generation, image upload,
+    AI image generation, and file updates.
+    
+    Args:
+        name (str): Person's name for the biography
+        job (str): Person's profession/job title  
+        place (str): Work environment or location
+        photo_path (str): Path to the temporary photo file
+    
+    Returns:
+        On success: Updates to show iframe with generated content
+        On error: Error message with retry button
+        
+    Workflow:
+        1. Generate Wikipedia biography text using Anthropic LLM
+        2. Upload user photo to WaveSpeed AI service
+        3. Generate AI image based on user photo and job context
+        4. Update output.html with generated content and new image
+        5. Display results in iframe
+    """
     try:
         # Call the LLM to generate the biography and image prompt
         llm_prompt, image_prompt = prepare_prompt(name, job, place)
@@ -447,9 +518,20 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         )
 
 
-# Route to show output.html when escape key is pressed — show the iframe
 @rt("/show_output")
 def show_output():
+    """
+    Route that switches the view to display generated content.
+    
+    Hides the info display area and shows the iframe containing
+    the generated Wikipedia biography. Used for manually displaying
+    content when it already exists.
+    
+    Returns:
+        Multiple elements with out-of-band swaps:
+        - Hides the info display area
+        - Shows the iframe with generated content
+    """
     # Hide the info display
     hide_info = Div(
         style="display:none;",
@@ -471,6 +553,20 @@ def show_output():
 
 @rt("/output_file")
 def output_file():
+    """
+    Route that serves the generated Wikipedia biography HTML file.
+    
+    Attempts to serve the output.html file containing the generated biography.
+    If the file doesn't exist (no content has been generated yet), returns
+    a helpful message and manages UI state.
+    
+    Returns:
+        On success: The generated HTML file (output.html)
+        On FileNotFoundError: 
+        - Message indicating no content exists yet
+        - Hides the iframe to prevent loading errors
+        - Directs user to use the Start button
+    """
     try:
         return File("output.html")
     except FileNotFoundError:
