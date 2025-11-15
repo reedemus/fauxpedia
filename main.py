@@ -1,4 +1,4 @@
-import os, json, time, base64, re, tempfile, logging, asyncio, time, httpx
+import os, json, time, base64, re, tempfile, logging, time, httpx
 from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
 from bs4 import BeautifulSoup
@@ -254,23 +254,32 @@ def portrait_reload(id: str):
                 
                 # Create updated iframe element
                 show_iframe = Iframe(
-                    src=f"/output_file?v={timestamp}",
+                    src=f"/output_file?refresh={timestamp}",
                     style="width:100%; height:80vh; border:0; display:block;",
                     title="Generated biography",
-                    id="content-iframe"
+                    id="content-iframe",
+                    hx_swap_oob="true"
                 )
-                
+
                 # Remove the polling element since we're done
-                stop_polling = Div(id="portrait-poller", style="display:none;", hx_swap_oob="true")
-                
+                stop_polling = Div("", id="polling-placeholder", hx_swap_oob="true")
+
                 return show_iframe, stop_polling
             else:
                 logger.warning("Portrait image element not found in output.html")
-                return Div("Portrait image element not found", id="portrait-poller", style="display:none;", hx_swap_oob="true")
+                return Div("Portrait image element not found", id="polling-placeholder", hx_swap_oob="true")
     else:
         logger.info(f"Generated image for {id} not found yet, continuing to poll")
-        # Return empty div to continue polling
-        return Div(id="portrait-poller", hx_swap_oob="true")
+        # Continue polling
+        portrait_poller = Div(
+            "🔄 Portrait generation in progress...",
+            id="polling-placeholder",
+            hx_post=f"/portrait_img/{id}",
+            hx_trigger="every 1s",
+            hx_swap="outerHTML",
+            style="background-color: #f0f8ff; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px;"
+        )
+        return portrait_poller
 
 def start_portrait_generation(photo_path: str, image_prompt: str)-> tuple[str, BackgroundTask]:
     """
@@ -295,11 +304,6 @@ def complete_portrait_generation(request_id: str):
         download_url = poll_generated_result(request_id)
         download_generated_result(request_id, download_url)
         logger.info(f"Portrait generation completed for request_id: {request_id}")
-        
-        # Trigger immediate UI update by calling portrait_reload to update the HTML
-        portrait_reload(request_id)
-        
-        logger.info(f"UI update triggered for request_id: {request_id}")
     except Exception as e:
         logger.error(f"Background portrait generation failed for {request_id}: {str(e)}")
 
@@ -347,12 +351,6 @@ style = Style("""
 # Initialize the app, passing in our custom styles
 app, rt = fast_app(hdrs=(style,))
 
-@rt("/portrait_img/{id}")
-def get_portrait_img(id: str):
-    logger.info(f"Received HTMX polling request for portrait_id: {id}")
-    result = portrait_reload(id)
-    return result
-
 @rt("/")
 def index():
     """
@@ -378,15 +376,18 @@ def index():
         P("Click 'Start' to enter your details."),
         id="info"
     )
-    
+
+    # Placeholder for polling element
+    polling_placeholder = Div(id="polling-placeholder")
+
     # Hidden iframe that will be shown when content is ready
     content_iframe = Iframe(
-        src="/output_file", 
-        style="width:100%; height:80vh; border:0; display:none;", 
+        src="/output_file",
+        style="width:100%; height:80vh; border:0; display:none;",
         title="Generated biography",
         id="content-iframe"
     )
-    
+
     # This is an empty placeholder where the modal will be loaded
     modal_placeholder = Div(id="modal-placeholder")
 
@@ -395,6 +396,7 @@ def index():
     return Titled("Create Your Fictional Wikipedia",
         Container(
             info_placeholder,
+            polling_placeholder,
             content_iframe,
             start_btn,
             modal_placeholder
@@ -503,18 +505,23 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
         temp_photo.write(await photo.read())
         temp_photo_path = temp_photo.name
 
-    # Return loading spinner immediately 
+    show_info = Div(
+        style="display:block;",
+        id="info"
+    )
+
+    # Return loading spinner immediately
     loading_display = Div(
         Div(cls="spinner"),
         H3("Generating your biography..."),
         P("This may take a moment. Please wait."),
         cls="loading-container",
         hx_post="/process",
-        hx_trigger="load",        
+        hx_trigger="load",
         hx_vals=json.dumps({
-            "name": name, 
-            "job": job, 
-            "place": place, 
+            "name": name,
+            "job": job,
+            "place": place,
             "photo_path": temp_photo_path
         }),
         hx_target="#info",
@@ -527,7 +534,7 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
     # Also clear the modal placeholder
     clear_modal_placeholder = Div(id="modal-placeholder", hx_swap_oob="true")
     
-    return loading_display, closed_modal, clear_modal_placeholder
+    return loading_display, show_info, closed_modal, clear_modal_placeholder
 
 
 @rt("/process") 
@@ -578,27 +585,9 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
             id="content-iframe",
             hx_swap_oob="true"
         )
-        hide_info = Div(
-            style="display:none;",
-            id="info",
-            hx_swap_oob="true"
-        )
-        
-        # Add polling element that uses your existing portrait_img route
-        # Make it visible for proper HTMX operation and add explicit target
-        portrait_poller = Div(
-            "🔄 Portrait generation in progress...",
-            "⏱️ Checking every second...",
-            id="portrait-poller",
-            hx_post=f"/portrait_img/{request_id}",
-            hx_trigger="every 1s",  # Increased interval to reduce server load
-            hx_target="#portrait-poller",  # Explicit target for the response
-            hx_swap="innerHTML",
-            style="background-color: #f0f8ff; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px;"
-        )
-        
+
         logger.info("Returning UI elements with polling setup")
-        return show_iframe, hide_info, portrait_poller, bck_task
+        return show_iframe, portrait_reload(request_id), bck_task
 
     except Exception as e:
         logger.error(f"Error processing form: {str(e)}")
@@ -612,37 +601,11 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         )
 
 
-@rt("/show_output")
-def show_output():
-    """
-    Route that switches the view to display generated content.
-    
-    Hides the info display area and shows the iframe containing
-    the generated Wikipedia biography. Used for manually displaying
-    content when it already exists.
-    
-    Returns:
-        Multiple elements with out-of-band swaps:
-        - Hides the info display area
-        - Shows the iframe with generated content
-    """
-    # Hide the info display
-    hide_info = Div(
-        style="display:none;",
-        id="info", 
-        hx_swap_oob="true"
-    )
-    
-    # Show the iframe
-    show_iframe = Iframe(
-        src="/output_file", 
-        style="width:100%; height:80vh; border:0; display:block;",
-        title="Generated biography",
-        id="content-iframe",
-        hx_swap_oob="true"
-    )
-    
-    return hide_info, show_iframe
+@rt("/portrait_img/{id}")
+def get_portrait_img(id: str):
+    logger.info(f"Received HTMX polling request for portrait_id: {id}")
+    result = portrait_reload(id)
+    return result
 
 
 @rt("/output_file")
