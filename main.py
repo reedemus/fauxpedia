@@ -575,20 +575,11 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
     """
     try:
         # Call the LLM to generate the biography and image prompt
-        llm_prompt, image_prompt, video_prompt = prepare_prompt(name, job, place)
+        llm_prompt, image_prompt = prepare_prompt(name, job, place)
         html_out = await call_anthropic(llm_prompt)
         out = cleanup_html_output(html_out)
         with open("output.html", "w") as f:
             f.write(out)
-
-        # Upload the user photo to the generative image service
-        photo_url = upload_photo(photo_path)
-        request_id = call_generate_image(photo_url, image_prompt)
-        download_url = poll_generated_result(request_id)
-        image_path = await download_generated_result(request_id, download_url)
-
-        with open("output.html", "r") as file:
-            html_content = file.read()
 
         # Start portrait image generation in background and get request_id
         request_id, bck_task = start_portrait_generation(photo_path, image_prompt)
@@ -618,9 +609,8 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
 
 @rt("/portrait_img/{id}")
 def get_portrait_img(id: str):
-    logger.info(f"Received HTMX polling request for portrait_id: {id}")
-    result = portrait_reload(id)
-    return result
+    logger.info(f"Receive polling request for id: {id}")
+    return portrait_reload(id)
 
 
 @rt("/output_file")
