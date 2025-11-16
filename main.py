@@ -263,7 +263,7 @@ def portrait_reload(id: str):
                 # Remove the polling element since we're done
                 stop_polling = Div("", id="polling-placeholder", hx_swap_oob="true")
                 # Also hide the header spinner (out-of-band swap)
-                hide_header_spinner = Div("", id="title spinner", hx_swap_oob="true")
+                hide_header_spinner = Div("", id="title-spinner", hx_swap_oob="true")
 
                 return show_iframe, stop_polling
             else:
@@ -282,7 +282,7 @@ def portrait_reload(id: str):
         )
         # Also trigger showing the header spinner via an out-of-band swap so
         # the small spinner in the header becomes visible while polling.
-        show_header_spinner = Div(cls="spinner", id="title spinner", style="display:inline", hx_swap_oob="true")
+        show_header_spinner = Div(cls="spinner", id="title-spinner", style="display:inline", hx_swap_oob="true")
         return portrait_poller, show_header_spinner
 
 
@@ -323,7 +323,7 @@ def video_reload(vid: str):
                 # Remove the polling element since we're done
                 stop_polling = Div("", id="video-placeholder", hx_swap_oob="true")
                 # Also hide the header spinner (out-of-band swap)
-                hide_header_spinner = Div("", id="title spinner", hx_swap_oob="true")
+                hide_header_spinner = Div("", id="title-spinner", hx_swap_oob="true")
 
                 return show_iframe, stop_polling, hide_header_spinner
             else:
@@ -343,7 +343,7 @@ def video_reload(vid: str):
 
         # Also trigger showing the header spinner via an out-of-band swap so
         # the small spinner in the header becomes visible while polling.
-        show_header_spinner = Div(cls="spinner", id="title spinner", style="display:inline", hx_swap_oob="true")
+        show_header_spinner = Div(cls="spinner", id="title-spinner", style="display:inline", hx_swap_oob="true")
 
         return video_poller, show_header_spinner
 
@@ -432,10 +432,11 @@ style = Style("""
     }
     .header-flex {
         display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
         margin-bottom: 2rem;
-        gap: 2rem;
+        gap: 1rem;
     }
     .header-flex h1 {
         margin: 0;
@@ -499,7 +500,8 @@ def index():
     # Manual header row: flex H1 and polling
     header_row = Div(
         H1("Create Your Fictional Wikipedia"),
-        Div(cls="spinner", id="title spinner", style="display:none"),
+        Div(cls="spinner", id="title-spinner", style="display:none"),
+        cls="header-flex"
     )
 
     return Container(
