@@ -7,13 +7,12 @@ from starlette.background import BackgroundTask
 
 # Environment variables
 load_dotenv(find_dotenv())
-llm_api_key = os.environ.get("OWN_ANTHROPIC_API_KEY")
+llm_api_key = os.environ.get("ANTHROPIC_API_KEY")
 gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
 
 # Configure basic logging for this module
 logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-# gen_video_api_key = os.environ.get("SORA_API_KEY")
 
 ## MODEL CALLS ##
 def expand_prompt(name: str, job: str, place: str) -> str:
