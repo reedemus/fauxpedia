@@ -262,6 +262,8 @@ def portrait_reload(id: str):
 
                 # Remove the polling element since we're done
                 stop_polling = Div("", id="polling-placeholder", hx_swap_oob="true")
+                # Also hide the header spinner (out-of-band swap)
+                hide_header_spinner = Div("", id="title spinner", hx_swap_oob="true")
 
                 return show_iframe, stop_polling
             else:
@@ -278,7 +280,10 @@ def portrait_reload(id: str):
             hx_swap="outerHTML",
             style="background-color: #f0f8ff; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px;"
         )
-        return portrait_poller
+        # Also trigger showing the header spinner via an out-of-band swap so
+        # the small spinner in the header becomes visible while polling.
+        show_header_spinner = Div(cls="spinner", id="title spinner", style="display:inline", hx_swap_oob="true")
+        return portrait_poller, show_header_spinner
 
 
 def video_reload(vid: str):
@@ -317,8 +322,10 @@ def video_reload(vid: str):
 
                 # Remove the polling element since we're done
                 stop_polling = Div("", id="video-placeholder", hx_swap_oob="true")
+                # Also hide the header spinner (out-of-band swap)
+                hide_header_spinner = Div("", id="title spinner", hx_swap_oob="true")
 
-                return show_iframe, stop_polling
+                return show_iframe, stop_polling, hide_header_spinner
             else:
                 logger.warning("Video element not found in output.html")
                 return Div("Video element not found", id="video-placeholder", hx_swap_oob="true")
@@ -333,7 +340,12 @@ def video_reload(vid: str):
             hx_swap="outerHTML",
             style="background-color: #f0f8ff; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px;"
         )
-        return video_poller
+
+        # Also trigger showing the header spinner via an out-of-band swap so
+        # the small spinner in the header becomes visible while polling.
+        show_header_spinner = Div(cls="spinner", id="title spinner", style="display:inline", hx_swap_oob="true")
+
+        return video_poller, show_header_spinner
 
 
 def start_portrait_generation(photo_path: str, image_prompt: str)-> tuple[str, BackgroundTask]:
@@ -432,12 +444,12 @@ style = Style("""
     }
     #polling-placeholder {
         min-width: 220px;
-        text-align: right;
+        text-align: left;
         align-self: flex-start;
     }
     #video-placeholder {
         min-width: 220px;
-        text-align: right;
+        text-align: left;
         align-self: flex-start;
     }
     .spinner {
@@ -471,11 +483,7 @@ def index():
         hx_swap="innerHTML"
     )
 
-    info_placeholder = Div(
-        P("Click 'Start' to enter your details."),
-        id="info"
-    )
-
+    info_placeholder = Div(P("Click 'Start' to enter your details."), id="info")
     polling_placeholder = Div(id="polling-placeholder")
     video_placeholder = Div(id="video-placeholder")
 
@@ -491,13 +499,13 @@ def index():
     # Manual header row: flex H1 and polling
     header_row = Div(
         H1("Create Your Fictional Wikipedia"),
-        polling_placeholder,
-        video_placeholder,
-        cls="header-flex"
+        Div(cls="spinner", id="title spinner", style="display:none"),
     )
 
     return Container(
         header_row,
+        polling_placeholder,
+        video_placeholder,
         info_placeholder,
         content_iframe,
         start_btn,
