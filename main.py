@@ -291,11 +291,11 @@ def video_reload(vid: str):
             html_content = file.read()
             soup = BeautifulSoup(html_content, 'html.parser')
         
-            # Find the video element by ID and update it
-            video_src = soup.find('video', id='portrait-video')
-            if video_src:
-                video_src['src'] = f"assets/{vid}.mp4"
-                logger.info(f"Updated video to assets/{vid}.mp4")
+            # Find the video element by ID and update it, autoloop
+            video_tag = soup.find('video', id='portrait-video')
+            if video_tag:
+                video_tag['loop'] = ""
+                video_tag['src'] = f"assets/{vid}.mp4"
                 
                 file.seek(0)
                 file.write(str(soup))
