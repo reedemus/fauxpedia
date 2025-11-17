@@ -13,19 +13,27 @@ gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
 # Configure basic logging for this module
 logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-# gen_video_api_key = os.environ.get("SORA_API_KEY")
 
 ## MODEL CALLS ##
+def expand_prompt(name: str, job: str, place: str) -> str:
+    llm_prompt = f"""Expand the prompt for a video generation model to include the subject, scene and motion: \
+        the person in the image is highly successful and famous {job} working at {place}"""
+    return llm_prompt
+
 def prepare_prompt(name: str, job: str, place: str) -> tuple[str, str]:
     llm_prompt = f"""
 Create a fictional and funny wikipedia biography of {name} as a {job} from {place}. 
 The output format must be html and css in typical wikipedia format. Strictly no emojis in the output.
 Use the placeholder image named portrait.jpg in the assets folder from the current directory.
 The placeholder image is given by element id "portrait-image".
+Use the placeholder video named portrait.mp4 in the assets folder from the current directory.
+The placeholder video is given by element id "portrait-video".
 Use the section headers below:
 - Early life
 - Career
 - Personal life
+- My typical work day
+  (place the video element here)
 - Awards and Achievements
 - Wealth
 - Scandals
@@ -194,37 +202,28 @@ def download_generated_result(request_id: str, url: str) -> str:
     return return_val
 
 
-def call_sora_video(image_path: str, scene_prompt: str) -> str:
-    """Call SORA video generation model.
+def call_generate_video(image_url: str, scene_prompt: str) -> str:
+    """Call video generation model"""
+    return_val = ""
 
-    Returns path to generated video file. Expect a multipart upload with the image and a prompt.
-    Configure SORA_API_URL and SORA_API_KEY.
-    """
-    url = os.environ.get("SORA_API_URL")
-    key = os.environ.get("SORA_API_KEY")
-    if not url or not key:
-        raise RuntimeError("SORA_API_URL or SORA_API_KEY not set")
-
-    with open(image_path, "rb") as f:
-        files = {"image": f}
-        data = {"prompt": scene_prompt}
-        headers = {"Authorization": f"Bearer {key}"}
-        resp = httpx.post(url, files=files, data=data, headers=headers, timeout=180)
-    resp.raise_for_status()
-    content_type = resp.headers.get("Content-Type", "")
-    out_path = tempfile.mktemp(suffix=".mp4")
-    if "application/json" in content_type:
-        js = resp.json()
-        b64 = js.get("video_base64") or js.get("b64") or js.get("video")
-        if not b64:
-            raise RuntimeError("Unexpected JSON response from SORA API: %s" % js)
-        with open(out_path, "wb") as out:
-            out.write(base64.b64decode(b64))
-    else:
-        with open(out_path, "wb") as out:
-            out.write(resp.content)
-
-    return out_path
+    url = "https://api.wavespeed.ai/api/v3/wavespeed-ai/wan-2.2/i2v-480p"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {gen_image_api_key}",
+    }
+    payload = {
+        "duration": 8,
+        "seed": -1,
+        "image": image_url,
+        "prompt": scene_prompt,
+    }
+    response = httpx.post(url, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    result = response.json()["data"]
+    request_id = result["id"]
+    return_val = request_id
+    logger.info(f"Task submitted successfully. Request ID: {request_id}")
+    return return_val
 
 
 def portrait_reload(id: str):
@@ -263,6 +262,8 @@ def portrait_reload(id: str):
 
                 # Remove the polling element since we're done
                 stop_polling = Div("", id="polling-placeholder", hx_swap_oob="true")
+                # Also hide the header spinner (out-of-band swap)
+                hide_header_spinner = Div("", id="title-spinner", hx_swap_oob="true")
 
                 return show_iframe, stop_polling
             else:
@@ -279,7 +280,73 @@ def portrait_reload(id: str):
             hx_swap="outerHTML",
             style="background-color: #f0f8ff; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px;"
         )
-        return portrait_poller
+        # Also trigger showing the header spinner via an out-of-band swap so
+        # the small spinner in the header becomes visible while polling.
+        show_header_spinner = Div(cls="spinner", id="title-spinner", style="display:inline", hx_swap_oob="true")
+        return portrait_poller, show_header_spinner
+
+
+def video_reload(vid: str):
+    """Update the video in output.html and trigger UI refresh"""
+    if os.path.exists(f"assets/{vid}.mp4"):
+        logger.info(f"Found generated video for {vid}, updating output.html")
+        
+        # Open output.html and replace the video src using sync file operations
+        with open("output.html", "r+") as file:
+            html_content = file.read()
+            soup = BeautifulSoup(html_content, 'html.parser')
+        
+            # Find the video element by ID and update it, autoloop
+            video_tag = soup.find('video', id='portrait-video')
+            if video_tag:
+                video_tag['loop'] = ""
+                video_tag['src'] = f"assets/{vid}.mp4"
+                
+                file.seek(0)
+                file.write(str(soup))
+                file.truncate()
+                logger.info("Successfully updated output.html")
+                
+                # Return elements for immediate UI update
+                # Update the iframe src to force refresh with cache busting
+                timestamp = int(time.time())
+                
+                # Create updated iframe element
+                show_iframe = Iframe(
+                    src=f"/output_file?refresh={timestamp}",
+                    style="width:100%; height:80vh; border:0; display:block;",
+                    title="Generated biography",
+                    id="content-iframe",
+                    hx_swap_oob="true"
+                )
+
+                # Remove the polling element since we're done
+                stop_polling = Div("", id="video-placeholder", hx_swap_oob="true")
+                # Also hide the header spinner (out-of-band swap)
+                hide_header_spinner = Div("", id="title-spinner", hx_swap_oob="true")
+
+                return show_iframe, stop_polling, hide_header_spinner
+            else:
+                logger.warning("Video element not found in output.html")
+                return Div("Video element not found", id="video-placeholder", hx_swap_oob="true")
+    else:
+        logger.info(f"Generated video for {vid} not found yet, continuing to poll")
+        # Continue polling
+        video_poller = Div(
+            "🔄 Video generation in progress...",
+            id="video-placeholder",
+            hx_post=f"/video_status/{vid}",
+            hx_trigger="every 1s",
+            hx_swap="outerHTML",
+            style="background-color: #f0f8ff; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px;"
+        )
+
+        # Also trigger showing the header spinner via an out-of-band swap so
+        # the small spinner in the header becomes visible while polling.
+        show_header_spinner = Div(cls="spinner", id="title-spinner", style="display:inline", hx_swap_oob="true")
+
+        return video_poller, show_header_spinner
+
 
 def start_portrait_generation(photo_path: str, image_prompt: str)-> tuple[str, BackgroundTask]:
     """
@@ -307,6 +374,36 @@ def complete_portrait_generation(request_id: str):
     except Exception as e:
         logger.error(f"Background portrait generation failed for {request_id}: {str(e)}")
 
+
+def start_video_generation(image_url: str, video_prompt: str) -> tuple[str, BackgroundTask]:
+    """
+    Start video generation and return request id immediately.
+    The actual video generation happens in background.
+    """
+    if image_url != "":
+        id = call_generate_video(image_url, video_prompt)
+        logger.info(f"Started video generation with request_id: {id}")
+        btask = BackgroundTask(complete_video_generation, id)
+        return id, btask
+    else:
+        logger.error("No input image for video generation!")
+        return "", None
+
+
+def complete_video_generation(request_id: str):
+    """
+    Complete the video generation in background.
+    Polls for result and downloads when ready.
+    Triggers immediate UI update when generation is complete.
+    """
+    try:
+        download_url = poll_generated_result(request_id)
+        download_generated_result(request_id, download_url)
+        logger.info(f"Video generation completed for request_id: {request_id}")
+    except Exception as e:
+        logger.error(f"Background video generation failed for {request_id}: {str(e)}")
+
+
 ## VIEW ##
 
 # Custom styling for the fixed button and placeholders
@@ -333,6 +430,29 @@ style = Style("""
         padding: 2rem;
         text-align: center;
     }
+    .header-flex {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        margin-bottom: 2rem;
+        gap: 1rem;
+    }
+    .header-flex h1 {
+        margin: 0;
+        font-size: 2.2rem;
+        font-weight: 700;
+    }
+    #polling-placeholder {
+        min-width: 220px;
+        text-align: left;
+        align-self: flex-start;
+    }
+    #video-placeholder {
+        min-width: 220px;
+        text-align: left;
+        align-self: flex-start;
+    }
     .spinner {
         border: 4px solid #f3f3f3;
         border-top: 4px solid #3498db;
@@ -355,32 +475,19 @@ app, rt = fast_app(hdrs=(style,))
 def index():
     """
     Main landing page route that displays the application interface.
-    
-    Returns:
-        A titled page containing:
-        - Info display area for messages and loading states
-        - Hidden iframe for displaying generated Wikipedia content
-        - Fixed "Start" button at bottom center for opening the form modal
-        - Empty modal placeholder for dynamic modal loading
     """
     start_btn = Button(
         "Start",
         id="start-btn",
-        hx_get="/open_modal",       # On click, it calls the /open_modal route
-        hx_target="#modal-placeholder", # It will place the response here
-        hx_swap="innerHTML"         # It replaces the content of the target
+        hx_get="/open_modal",
+        hx_target="#modal-placeholder",
+        hx_swap="innerHTML"
     )
 
-    # This is the placeholder where submitted info will appear
-    info_placeholder = Div(
-        P("Click 'Start' to enter your details."),
-        id="info"
-    )
-
-    # Placeholder for polling element
+    info_placeholder = Div(P("Click 'Start' to enter your details."), id="info")
     polling_placeholder = Div(id="polling-placeholder")
+    video_placeholder = Div(id="video-placeholder")
 
-    # Hidden iframe that will be shown when content is ready
     content_iframe = Iframe(
         src="/output_file",
         style="width:100%; height:80vh; border:0; display:none;",
@@ -388,19 +495,23 @@ def index():
         id="content-iframe"
     )
 
-    # This is an empty placeholder where the modal will be loaded
     modal_placeholder = Div(id="modal-placeholder")
 
-    # Titled() creates a <title> and <H1>
-    # Container() provides Pico CSS's standard page wrapper
-    return Titled("Create Your Fictional Wikipedia",
-        Container(
-            info_placeholder,
-            polling_placeholder,
-            content_iframe,
-            start_btn,
-            modal_placeholder
-        )
+    # Manual header row: flex H1 and polling
+    header_row = Div(
+        H1("Create Your Fictional Wikipedia"),
+        Div(cls="spinner", id="title-spinner", style="display:none"),
+        cls="header-flex"
+    )
+
+    return Container(
+        header_row,
+        polling_placeholder,
+        video_placeholder,
+        info_placeholder,
+        content_iframe,
+        start_btn,
+        modal_placeholder
     )
 
 
@@ -509,7 +620,6 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
         style="display:block;",
         id="info"
     )
-
     # Return loading spinner immediately
     loading_display = Div(
         Div(cls="spinner"),
@@ -566,8 +676,6 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
     try:
         # Call the LLM to generate the biography and image prompt
         llm_prompt, image_prompt = prepare_prompt(name, job, place)
-        logger.info(f"Generated prompts for {name}, starting portrait generation")
-        
         html_out = await call_anthropic(llm_prompt)
         out = cleanup_html_output(html_out)
         with open("output.html", "w") as f:
@@ -576,7 +684,14 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         # Start portrait image generation in background and get request_id
         request_id, bck_task = start_portrait_generation(photo_path, image_prompt)
         logger.info(f"Started portrait generation with request_id: {request_id}")
-        
+
+        # Start video generation in background and get request_id.
+        # Requires portrait image to be ready first, so we do it in background task later.
+        llm_prompt = expand_prompt(name, job, place)
+        video_prompt = await call_anthropic(llm_prompt)
+        image_url = poll_generated_result(request_id)
+        video_request_id, video_task = start_video_generation(image_url, video_prompt)
+
         # Return updates to show the iframe immediately with the placeholder image
         show_iframe = Iframe(
             src="/output_file",
@@ -585,9 +700,7 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
             id="content-iframe",
             hx_swap_oob="true"
         )
-
-        logger.info("Returning UI elements with polling setup")
-        return show_iframe, portrait_reload(request_id), bck_task
+        return show_iframe, portrait_reload(request_id), bck_task, video_reload(video_request_id), video_task
 
     except Exception as e:
         logger.error(f"Error processing form: {str(e)}")
@@ -603,9 +716,14 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
 
 @rt("/portrait_img/{id}")
 def get_portrait_img(id: str):
-    logger.info(f"Received HTMX polling request for portrait_id: {id}")
-    result = portrait_reload(id)
-    return result
+    logger.info(f"Receive polling request for image id: {id}")
+    return portrait_reload(id)
+
+
+@rt('/video_status/{id}')
+def video_status(id: str):
+    logger.info(f"Receive polling request for video id: {id}")
+    return video_reload(id)
 
 
 @rt("/output_file")
@@ -645,4 +763,4 @@ def output_file():
         )
         return show_message, hide_iframe
 
-serve(port=5002)
+serve()
