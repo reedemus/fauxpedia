@@ -46,19 +46,13 @@ Use the section headers below:
 
 def cleanup_html_output(content: str) -> str:
     """Cleans up the HTML output from the LLM by extracting the <!DOCTYPE html> to </html> block."""
-    # Define the regex pattern
-    # re.DOTALL makes '.' match newline characters
-    # re.IGNORECASE makes the match case-insensitive
-    pattern = re.compile(r"(<!DOCTYPE html>.*?</html>)", re.DOTALL | re.IGNORECASE)
-    
-    # Search for the pattern
-    match = pattern.search(content)
-    if match:
-        clean_html = match.group(1)
-        return clean_html
-    else:
-        print("Error: Could not find a valid <!DOCTYPE html>...</html> block.")
-        return content
+    # Find the position of <!DOCTYPE html> and rmeove anything before it
+    doctype_pos = content.find("<!DOCTYPE html>")
+    if doctype_pos != -1:
+        content = content[doctype_pos:]
+    # Fill missing closing html tags automatically after parsing
+    parsed_html = BeautifulSoup(content, 'html.parser')
+    return parsed_html.prettify()
 
 
 async def call_anthropic(prompt: str) -> str:
