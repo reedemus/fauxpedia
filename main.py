@@ -7,7 +7,7 @@ from starlette.background import BackgroundTask
 
 # Environment variables
 load_dotenv(find_dotenv())
-llm_api_key = os.environ.get("ANTHROPIC_API_KEY")
+llm_api_key = os.environ.get("OWN_ANTHROPIC_API_KEY")
 gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
 
 # Configure basic logging for this module
@@ -15,9 +15,9 @@ logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.
 logger = logging.getLogger(__name__)
 
 ## MODEL CALLS ##
-def expand_prompt(name: str, job: str, place: str) -> str:
-    llm_prompt = f"""Expand the prompt for a video generation model to include the subject, scene and motion: \
-        the person in the image is highly successful and famous {job} working at {place}"""
+def expand_prompt(job: str, place: str) -> str:
+    llm_prompt = f"""Using the attached image, expand the prompt below for a video generation model to include the subject, scene and motion: \
+        the person in the image is highly successful and famous {job} working at {place}."""
     return llm_prompt
 
 def prepare_prompt(name: str, job: str, place: str) -> tuple[str, str]:
@@ -55,20 +55,58 @@ def cleanup_html_output(content: str) -> str:
     return parsed_html.prettify()
 
 
-async def call_anthropic(prompt: str) -> str:
+async def call_anthropic(prompt: str, image: str="", is_url: bool=False) -> str:
     """Call an Anthropic/Claude-style LLM endpoint."""
     client = AsyncAnthropic(
         api_key=llm_api_key,
         timeout=120.0  # Increase timeout to 120 seconds
     )
+    text_only = prompt
+    image_and_text = [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": base64.b64encode(open(image, "rb").read()).decode('utf-8'),
+            },
+        },
+        {
+            "type": "text",
+            "text": prompt
+        }
+    ]
+    image_url_and_text = [
+        {
+            "type": "image",
+            "source": {
+                "type": "url",
+                "url": image,
+            },
+        },
+        {
+            "type": "text",
+            "text": prompt
+        }
+    ]
+
+    if len(image):
+        if is_url:
+            input = image_url_and_text
+        else:
+            input = image_and_text
+    else:
+        input = text_only
+
     msg = await client.messages.create(
         model="claude-sonnet-4-5-20250929",
         max_tokens= 5120,
         messages=[
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": input}
         ]
     )
     content = msg.content[0].text
+    output_tokens = msg.usage['output_tokens']
     return content
 
 
@@ -681,10 +719,14 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
 
         # Start video generation in background and get request_id.
         # Requires portrait image to be ready first, so we do it in background task later.
-        llm_prompt = expand_prompt(name, job, place)
-        video_prompt = await call_anthropic(llm_prompt)
         image_url = poll_generated_result(request_id)
-        video_request_id, video_task = start_video_generation(image_url, video_prompt)
+        if image_url != "":
+            logger.info(f"Starting video generation after portrait is ready.")
+            # Prepare video prompt
+            video_prompt = await call_anthropic(prompt=expand_prompt(job, place), image=image_url)
+            str_index = video_prompt.find("subject".tolower())
+            video_prompt = video_prompt[str_index:]
+            video_request_id, video_task = start_video_generation(image_url, video_prompt)
 
         # Return updates to show the iframe immediately with the placeholder image
         show_iframe = Iframe(
