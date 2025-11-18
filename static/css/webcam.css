@@ -1,0 +1,86 @@
+/* Radio button styling */
+.radio-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 1rem;
+    gap: 2rem;
+}
+
+.radio-option {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+}
+
+.radio-option input[type="radio"] {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #007bff;
+}
+
+.radio-option label {
+    font-weight: 500;
+    color: #333;
+    cursor: pointer;
+    margin: 0;
+    transition: color 0.3s ease;
+}
+
+.radio-option input[type="radio"]:checked + label {
+    color: #007bff;
+    font-weight: 600;
+}
+
+.radio-option:hover label {
+    color: #0056b3;
+}
+
+/* Webcam section styling */
+#webcam-section {
+    text-align: center;
+    padding: 1rem 0;
+}
+
+#webcam-video, #webcam-canvas {
+    max-width: 100%;
+    border: 2px solid #ddd;
+    border-radius: 8px;
+    margin: 0 auto 1rem auto;
+    display: block;
+}
+
+#webcam-section button {
+    margin: 0.5rem;
+    padding: 0.5rem 1rem;
+    border: 1px solid #007bff;
+    background: #007bff;
+    color: white;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#webcam-section button:hover {
+    background: #0056b3;
+}
+
+/* Photo input section */
+#photo-input-section {
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 1rem;
+    margin: 1rem 0;
+}
+
+#upload-section {
+    padding: 1rem 0;
+}
+
+#upload-section input[type="file"] {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
