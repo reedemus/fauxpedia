@@ -654,9 +654,8 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
     )
     # Return loading spinner immediately
     loading_display = Div(
-        Div(cls="spinner"),
         H3("Generating your biography..."),
-        P("This may take a moment. Please wait."),
+        Div(cls="spinner", id="title-spinner", style="display:inline", hx_swap_oob="true"),
         cls="loading-container",
         hx_post="/process",
         hx_trigger="load",
