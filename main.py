@@ -61,42 +61,35 @@ async def call_anthropic(prompt: str, image: str="", is_url: bool=False) -> str:
         api_key=llm_api_key,
         timeout=120.0  # Increase timeout to 120 seconds
     )
-    text_only = prompt
-    image_and_text = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": base64.b64encode(open(image, "rb").read()).decode('utf-8'),
-            },
-        },
-        {
-            "type": "text",
-            "text": prompt
-        }
-    ]
-    image_url_and_text = [
-        {
-            "type": "image",
-            "source": {
-                "type": "url",
-                "url": image,
-            },
-        },
-        {
-            "type": "text",
-            "text": prompt
-        }
-    ]
 
     if len(image):
-        if is_url:
-            input = image_url_and_text
-        else:
-            input = image_and_text
+            if is_url:
+                input = [{  "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": image,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                ]
+            else:
+                input = [{  "type": "image",
+                            "source": {
+                                    "type": "base64",
+                                    "media_type": "image/jpeg",
+                                    "data": base64.b64encode(open(image, "rb").read()).decode('utf-8'),
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                ]
     else:
-        input = text_only
+        input = prompt
 
     msg = await client.messages.create(
         model="claude-sonnet-4-5-20250929",
