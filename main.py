@@ -7,7 +7,7 @@ from starlette.background import BackgroundTask
 
 # Environment variables
 load_dotenv(find_dotenv())
-llm_api_key = os.environ.get("OWN_ANTHROPIC_API_KEY")
+llm_api_key = os.environ.get("ANTHROPIC_API_KEY")
 gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
 
 # Configure basic logging for this module
@@ -93,13 +93,13 @@ async def call_anthropic(prompt: str, image: str="", is_url: bool=False) -> str:
 
     msg = await client.messages.create(
         model="claude-sonnet-4-5-20250929",
-        max_tokens= 5120,
         messages=[
             {"role": "user", "content": input}
         ]
     )
     content = msg.content[0].text
-    output_tokens = msg.usage['output_tokens']
+    output_tokens = msg.usage.output_tokens
+    logger.info(f"Used {output_tokens} output tokens.")
     return content
 
 
