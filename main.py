@@ -4,11 +4,14 @@ from anthropic import AsyncAnthropic
 from bs4 import BeautifulSoup
 from fasthtml.common import *
 from starlette.background import BackgroundTask
+from gradio_client import Client, handle_file
 
 # Environment variables
 load_dotenv(find_dotenv())
 llm_api_key = os.environ.get("OWN_ANTHROPIC_API_KEY")
 gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
+hf_api_key = os.environ.get("HFACE_API_KEY")
+hf_space_url = os.environ.get("HF_SPACE_URL")
 
 # Configure basic logging for this module
 logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -235,27 +238,23 @@ def download_generated_result(request_id: str, url: str) -> str:
 
 
 def call_generate_video(image_url: str, scene_prompt: str) -> str:
-    """Call video generation model"""
-    return_val = ""
-
-    url = "https://api.wavespeed.ai/api/v3/wavespeed-ai/wan-2.2/i2v-480p"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {gen_image_api_key}",
-    }
-    payload = {
-        "duration": 8,
-        "seed": -1,
-        "image": image_url,
-        "prompt": scene_prompt,
-    }
-    response = httpx.post(url, headers=headers, json=payload, timeout=60)
-    response.raise_for_status()
-    result = response.json()["data"]
-    request_id = result["id"]
-    return_val = request_id
-    logger.info(f"Task submitted successfully. Request ID: {request_id}")
-    return return_val
+    """Call video generation model
+    Returns local path to generated video file.
+    """
+    client = Client(hf_space_url, token=hf_api_key)
+    result_dict, _ = client.predict(
+        input_image=handle_file(image_url),
+        prompt=scene_prompt,
+        steps=6,
+        negative_prompt="low quality, blurry, deformed, distorted, disfigured, ugly, duplicate, watermark, text, error, cropped, worst quality",
+        duration_seconds=5.0,
+        guidance_scale=1,
+        guidance_scale_2=1,
+        seed=42,
+        randomize_seed=True,
+        api_name="/generate_video"
+    )
+    return result_dict.get("video")
 
 
 def portrait_reload(id: str):
@@ -407,19 +406,19 @@ def complete_portrait_generation(request_id: str):
         logger.error(f"Background portrait generation failed for {request_id}: {str(e)}")
 
 
-def start_video_generation(image_url: str, video_prompt: str) -> tuple[str, BackgroundTask]:
+def start_video_generation(image_url: str, video_prompt: str) -> str:
     """
     Start video generation and return request id immediately.
     The actual video generation happens in background.
     """
     if image_url != "":
-        id = call_generate_video(image_url, video_prompt)
-        logger.info(f"Started video generation with request_id: {id}")
-        btask = BackgroundTask(complete_video_generation, id)
-        return id, btask
+        logger.info(f"Started video generation for image_url: {image_url}")
+        vid_file_path = call_generate_video(image_url, video_prompt)
+        os.system(f"cp {vid_file_path} {os.curdir}/assets/")
+        return "OK"
     else:
         logger.error("No input image for video generation!")
-        return "", None
+        return ""
 
 
 def complete_video_generation(request_id: str):
