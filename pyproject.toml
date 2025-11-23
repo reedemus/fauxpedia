@@ -9,4 +9,5 @@ dependencies = [
     "anthropic>=0.72.0",
     "python-fasthtml>=0.12.33",
     "requests",
+    "gradio_client"
 ]
