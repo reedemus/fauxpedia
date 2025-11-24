@@ -1,4 +1,4 @@
-import os, json, time, base64, tempfile, logging, time, httpx
+import os, json, time, base64, tempfile, logging, time, httpx, random
 from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
 from bs4 import BeautifulSoup
@@ -237,12 +237,12 @@ def download_generated_result(request_id: str, url: str) -> str:
     return return_val
 
 
-def call_generate_video(image_url: str, scene_prompt: str) -> str:
+def call_generate_video(image_url: str, scene_prompt: str):
     """Call video generation model
     Returns local path to generated video file.
     """
     client = Client(hf_space_url, token=hf_api_key)
-    result_dict, _ = client.predict(
+    job = client.submit(
         input_image=handle_file(image_url),
         prompt=scene_prompt,
         steps=6,
@@ -254,7 +254,7 @@ def call_generate_video(image_url: str, scene_prompt: str) -> str:
         randomize_seed=True,
         api_name="/generate_video"
     )
-    return result_dict.get("video")
+    return job
 
 
 def portrait_reload(id: str):
@@ -406,33 +406,37 @@ def complete_portrait_generation(request_id: str):
         logger.error(f"Background portrait generation failed for {request_id}: {str(e)}")
 
 
-def start_video_generation(image_url: str, video_prompt: str) -> str:
+def start_video_generation(image_url: str, video_prompt: str) -> tuple[int, BackgroundTask]:
     """
     Start video generation and return request id immediately.
     The actual video generation happens in background.
     """
-    if image_url != "":
-        logger.info(f"Started video generation for image_url: {image_url}")
-        vid_file_path = call_generate_video(image_url, video_prompt)
-        os.system(f"cp {vid_file_path} {os.curdir}/assets/")
-        return "OK"
-    else:
-        logger.error("No input image for video generation!")
-        return ""
+    job = call_generate_video(image_url, video_prompt)
+    # generate a random vid for tracking
+    vid = random.randint(100, 999)
+    btask = BackgroundTask(complete_video_generation, job=job, video_id=vid)
+    return vid, btask
 
 
-def complete_video_generation(request_id: str):
+def complete_video_generation(job, video_id: int) -> str:
     """
     Complete the video generation in background.
-    Polls for result and downloads when ready.
-    Triggers immediate UI update when generation is complete.
+    Returns file name of the video generated.
     """
     try:
-        download_url = poll_generated_result(request_id)
-        download_generated_result(request_id, download_url)
-        logger.info(f"Video generation completed for request_id: {request_id}")
+        result_dict, _ = job.result() # blocking call
+        vid_file_path = result_dict.get("video")
+        vid_file_name = os.path.basename(vid_file_path)
+        vid_str = str(video_id)
+        os.system(f"cp {vid_file_path} {os.curdir}/assets/")
+        os.system(f"mv {os.curdir}/assets/{vid_file_name} {os.curdir}/assets/{vid_str}.mp4")
+        logger.info(f"Video generation completed")
+    except TimeoutError:
+        logger.error("Background video generation timed out")
+    except CancelledError:
+        logger.error("Background video generation was cancelled")
     except Exception as e:
-        logger.error(f"Background video generation failed for {request_id}: {str(e)}")
+        logger.error(f"Background video generation failed: {str(e)}")
 
 
 ## VIEW ##
@@ -725,7 +729,7 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
             video_prompt = await call_anthropic(prompt=expand_prompt(job, place), image=image_url)
             str_index = video_prompt.find("subject".tolower())
             video_prompt = video_prompt[str_index:]
-            video_request_id, video_task = start_video_generation(image_url, video_prompt)
+            vid, video_task = start_video_generation(image_url, video_prompt)
 
         # Return updates to show the iframe immediately with the placeholder image
         show_iframe = Iframe(
@@ -735,7 +739,7 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
             id="content-iframe",
             hx_swap_oob="true"
         )
-        return show_iframe, portrait_reload(request_id), bck_task, video_reload(video_request_id), video_task
+        return show_iframe, portrait_reload(request_id), bck_task, video_reload(str(vid)), video_task
 
     except Exception as e:
         logger.error(f"Error processing form: {str(e)}")
