@@ -1,4 +1,4 @@
-import os, json, time, base64, re, tempfile, logging, time, httpx
+import os, json, time, base64, tempfile, logging, time, httpx
 from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
 from bs4 import BeautifulSoup
