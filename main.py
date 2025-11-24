@@ -12,6 +12,8 @@ llm_api_key = os.environ.get("ANTHROPIC_API_KEY")
 gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
 hf_api_key = os.environ.get("HFACE_API_KEY")
 hf_space_url = os.environ.get("HF_SPACE_URL")
+img_service_key = os.environ.get("IMGBB_API_KEY")
+
 
 # Configure basic logging for this module
 logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -108,7 +110,7 @@ async def call_anthropic(prompt: str, image: str="", is_url: bool=False) -> str:
 
 
 def upload_photo(file_path: str) -> str:
-    """Upload user photo to the WavespeedAI media upload endpoint for processing.
+    """Upload user photo to imgBB for temp storagecwith an expiration time.
     Returns the url of the uploaded image.
     """
     image_url = ""
@@ -116,17 +118,15 @@ def upload_photo(file_path: str) -> str:
         print(f"Error: File {file_path} does not exist")
         return image_url
 
-    api_url="https://api.wavespeed.ai/api/v3/media/upload/binary"
-    headers = {
-        "Authorization": f"Bearer {gen_image_api_key}",
-    }
+    api_url="https://api.imgbb.com/1/upload"
+    parameters = {"expiration": 600, "key": img_service_key} # photo is deleted after 10 minutes
 
     with open(file_path, 'rb') as f:
-        files = {'file': f}
-        response = httpx.post(api_url, files=files, headers=headers)
+        files = {'image': f}
+        response = httpx.post(api_url, files=files, params=parameters)
         response.raise_for_status()
         json_data = json.loads(response.content.decode('utf-8'))
-        image_url = json_data['data']['download_url']
+        image_url = json_data['data']['image']['url']
         logger.info(f"Upload successful! Download url: {image_url}")
     return image_url
 
