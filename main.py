@@ -8,7 +8,7 @@ from gradio_client import Client, handle_file
 
 # Environment variables
 load_dotenv(find_dotenv())
-llm_api_key = os.environ.get("OWN_ANTHROPIC_API_KEY")
+llm_api_key = os.environ.get("ANTHROPIC_API_KEY")
 gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
 hf_api_key = os.environ.get("HFACE_API_KEY")
 hf_space_url = os.environ.get("HF_SPACE_URL")
@@ -64,52 +64,45 @@ async def call_anthropic(prompt: str, image: str="", is_url: bool=False) -> str:
         api_key=llm_api_key,
         timeout=120.0  # Increase timeout to 120 seconds
     )
-    text_only = prompt
-    image_and_text = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": base64.b64encode(open(image, "rb").read()).decode('utf-8'),
-            },
-        },
-        {
-            "type": "text",
-            "text": prompt
-        }
-    ]
-    image_url_and_text = [
-        {
-            "type": "image",
-            "source": {
-                "type": "url",
-                "url": image,
-            },
-        },
-        {
-            "type": "text",
-            "text": prompt
-        }
-    ]
 
     if len(image):
-        if is_url:
-            input = image_url_and_text
-        else:
-            input = image_and_text
+            if is_url:
+                input = [{  "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": image,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                ]
+            else:
+                input = [{  "type": "image",
+                            "source": {
+                                    "type": "base64",
+                                    "media_type": "image/jpeg",
+                                    "data": base64.b64encode(open(image, "rb").read()).decode('utf-8'),
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                ]
     else:
-        input = text_only
+        input = prompt
 
     msg = await client.messages.create(
         model="claude-sonnet-4-5-20250929",
-        max_tokens= 5120,
         messages=[
             {"role": "user", "content": input}
         ]
     )
     content = msg.content[0].text
-    output_tokens = msg.usage['output_tokens']
+    output_tokens = msg.usage.output_tokens
+    logger.info(f"Used {output_tokens} output tokens.")
     return content
 
 
@@ -657,9 +650,8 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
     )
     # Return loading spinner immediately
     loading_display = Div(
-        Div(cls="spinner"),
         H3("Generating your biography..."),
-        P("This may take a moment. Please wait."),
+        Div(cls="spinner", id="title-spinner", style="display:inline", hx_swap_oob="true"),
         cls="loading-container",
         hx_post="/process",
         hx_trigger="load",
