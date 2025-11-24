@@ -95,7 +95,8 @@ async def call_anthropic(prompt: str, image: str="", is_url: bool=False) -> str:
         model="claude-sonnet-4-5-20250929",
         messages=[
             {"role": "user", "content": input}
-        ]
+        ],
+        max_tokens=10240,
     )
     content = msg.content[0].text
     output_tokens = msg.usage.output_tokens
