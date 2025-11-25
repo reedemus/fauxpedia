@@ -1,23 +1,31 @@
-import os, json, time, base64, re, tempfile, logging, time, httpx
+import os, json, time, base64, tempfile, logging, time, httpx, random
 from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
 from bs4 import BeautifulSoup
 from fasthtml.common import *
 from starlette.background import BackgroundTask
+from gradio_client import Client, handle_file
 
 # Environment variables
 load_dotenv(find_dotenv())
 llm_api_key = os.environ.get("ANTHROPIC_API_KEY")
 gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
+hf_api_key = os.environ.get("HFACE_API_KEY")
+hf_space_url = os.environ.get("HF_SPACE_URL")
+img_service_key = os.environ.get("IMGBB_API_KEY")
+
+# folder for generated assets
+GEN_FOLDER = "./generated"
+os.makedirs(GEN_FOLDER, exist_ok=True)
 
 # Configure basic logging for this module
 logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 ## MODEL CALLS ##
-def expand_prompt(name: str, job: str, place: str) -> str:
-    llm_prompt = f"""Expand the prompt for a video generation model to include the subject, scene and motion: \
-        the person in the image is highly successful and famous {job} working at {place}"""
+def expand_prompt(job: str, place: str) -> str:
+    llm_prompt = f"""Using the attached image, expand the prompt below for a video generation model to include the subject, scene and motion: \
+        the person in the image is highly successful and famous {job} working at {place}."""
     return llm_prompt
 
 def prepare_prompt(name: str, job: str, place: str) -> tuple[str, str]:
@@ -55,25 +63,57 @@ def cleanup_html_output(content: str) -> str:
     return parsed_html.prettify()
 
 
-async def call_anthropic(prompt: str) -> str:
+async def call_anthropic(prompt: str, image: str="", is_url: bool=False) -> str:
     """Call an Anthropic/Claude-style LLM endpoint."""
     client = AsyncAnthropic(
         api_key=llm_api_key,
         timeout=120.0  # Increase timeout to 120 seconds
     )
+
+    if len(image):
+            if is_url:
+                input = [{  "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": image,
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                ]
+            else:
+                input = [{  "type": "image",
+                            "source": {
+                                    "type": "base64",
+                                    "media_type": "image/jpeg",
+                                    "data": base64.b64encode(open(image, "rb").read()).decode('utf-8'),
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                ]
+    else:
+        input = prompt
+
     msg = await client.messages.create(
         model="claude-sonnet-4-5-20250929",
-        max_tokens= 5120,
         messages=[
-            {"role": "user", "content": prompt}
-        ]
+            {"role": "user", "content": input}
+        ],
+        max_tokens=10240,
     )
     content = msg.content[0].text
+    output_tokens = msg.usage.output_tokens
+    logger.info(f"Used {output_tokens} output tokens.")
     return content
 
 
 def upload_photo(file_path: str) -> str:
-    """Upload user photo to the WavespeedAI media upload endpoint for processing.
+    """Upload user photo to imgBB for temp storagecwith an expiration time.
     Returns the url of the uploaded image.
     """
     image_url = ""
@@ -81,17 +121,15 @@ def upload_photo(file_path: str) -> str:
         print(f"Error: File {file_path} does not exist")
         return image_url
 
-    api_url="https://api.wavespeed.ai/api/v3/media/upload/binary"
-    headers = {
-        "Authorization": f"Bearer {gen_image_api_key}",
-    }
+    api_url="https://api.imgbb.com/1/upload"
+    parameters = {"expiration": 600, "key": img_service_key} # photo is deleted after 10 minutes
 
     with open(file_path, 'rb') as f:
-        files = {'file': f}
-        response = httpx.post(api_url, files=files, headers=headers)
+        files = {'image': f}
+        response = httpx.post(api_url, files=files, params=parameters)
         response.raise_for_status()
         json_data = json.loads(response.content.decode('utf-8'))
-        image_url = json_data['data']['download_url']
+        image_url = json_data['data']['image']['url']
         logger.info(f"Upload successful! Download url: {image_url}")
     return image_url
 
@@ -108,7 +146,7 @@ def call_generate_image(face_image_url: str, prompt: str) -> str:
         "Authorization": f"Bearer {gen_image_api_key}",
     }
     payload = {
-        "enable_base64_output": True,
+        "enable_base64_output": False,
         "enable_sync_mode": False,
         "images": [face_image_url],
         "prompt": prompt,
@@ -160,8 +198,8 @@ def poll_generated_result(request_id: str) -> str:
 def download_generated_result(request_id: str, url: str) -> str:
     """Download generated image/video from url.
     Returns local path of saved image/video"""
-    saved_image_path = f"assets/{request_id}.jpeg"
-    saved_video_path = f"assets/{request_id}.mp4"
+    saved_image_path = f"{GEN_FOLDER}/{request_id}.jpeg"
+    saved_video_path = f"{GEN_FOLDER}/{request_id}.mp4"
     return_val = ""
 
     if "data:image/jpeg;base64" in url:
@@ -196,33 +234,29 @@ def download_generated_result(request_id: str, url: str) -> str:
     return return_val
 
 
-def call_generate_video(image_url: str, scene_prompt: str) -> str:
-    """Call video generation model"""
-    return_val = ""
-
-    url = "https://api.wavespeed.ai/api/v3/wavespeed-ai/wan-2.2/i2v-480p"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {gen_image_api_key}",
-    }
-    payload = {
-        "duration": 8,
-        "seed": -1,
-        "image": image_url,
-        "prompt": scene_prompt,
-    }
-    response = httpx.post(url, headers=headers, json=payload, timeout=60)
-    response.raise_for_status()
-    result = response.json()["data"]
-    request_id = result["id"]
-    return_val = request_id
-    logger.info(f"Task submitted successfully. Request ID: {request_id}")
-    return return_val
+def call_generate_video(image_url: str, scene_prompt: str):
+    """Call video generation model
+    Returns local path to generated video file.
+    """
+    client = Client(hf_space_url, token=hf_api_key)
+    job = client.submit(
+        input_image=handle_file(image_url),
+        prompt=scene_prompt,
+        steps=6,
+        negative_prompt="low quality, blurry, deformed, distorted, disfigured, ugly, duplicate, watermark, text, error, cropped, worst quality",
+        duration_seconds=5.0,
+        guidance_scale=1,
+        guidance_scale_2=1,
+        seed=42,
+        randomize_seed=True,
+        api_name="/generate_video"
+    )
+    return job
 
 
 def portrait_reload(id: str):
     """Update the portrait image in output.html and trigger UI refresh"""
-    if os.path.exists(f"assets/{id}.jpeg"):
+    if os.path.exists(f"{GEN_FOLDER}/{id}.jpeg"):
         logger.info(f"Found generated image for {id}, updating output.html")
         
         # Open output.html and replace the image src using sync file operations
@@ -233,8 +267,8 @@ def portrait_reload(id: str):
             # Find the portrait image element by ID and update it
             portrait_img = soup.find('img', id='portrait-image')
             if portrait_img:
-                portrait_img['src'] = f"assets/{id}.jpeg"
-                logger.info(f"Updated image src to assets/{id}.jpeg")
+                portrait_img['src'] = f"{GEN_FOLDER}/{id}.jpeg"
+                logger.info(f"Updated image src to {GEN_FOLDER}/{id}.jpeg")
                 
                 file.seek(0)
                 file.write(str(soup))
@@ -282,7 +316,7 @@ def portrait_reload(id: str):
 
 def video_reload(vid: str):
     """Update the video in output.html and trigger UI refresh"""
-    if os.path.exists(f"assets/{vid}.mp4"):
+    if os.path.exists(f"{GEN_FOLDER}/{vid}.mp4"):
         logger.info(f"Found generated video for {vid}, updating output.html")
         
         # Open output.html and replace the video src using sync file operations
@@ -294,7 +328,7 @@ def video_reload(vid: str):
             video_tag = soup.find('video', id='portrait-video')
             if video_tag:
                 video_tag['loop'] = ""
-                video_tag['src'] = f"assets/{vid}.mp4"
+                video_tag['src'] = f"{GEN_FOLDER}/{vid}.mp4"
                 
                 file.seek(0)
                 file.write(str(soup))
@@ -330,7 +364,7 @@ def video_reload(vid: str):
             "🔄 Video generation in progress...",
             id="video-placeholder",
             hx_post=f"/video_status/{vid}",
-            hx_trigger="every 1s",
+            hx_trigger="every 2s",
             hx_swap="outerHTML",
             style="background-color: #f0f8ff; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px;"
         )
@@ -369,33 +403,37 @@ def complete_portrait_generation(request_id: str):
         logger.error(f"Background portrait generation failed for {request_id}: {str(e)}")
 
 
-def start_video_generation(image_url: str, video_prompt: str) -> tuple[str, BackgroundTask]:
+def start_video_generation(image_url: str, video_prompt: str) -> tuple[int, BackgroundTask]:
     """
     Start video generation and return request id immediately.
     The actual video generation happens in background.
     """
-    if image_url != "":
-        id = call_generate_video(image_url, video_prompt)
-        logger.info(f"Started video generation with request_id: {id}")
-        btask = BackgroundTask(complete_video_generation, id)
-        return id, btask
-    else:
-        logger.error("No input image for video generation!")
-        return "", None
+    job = call_generate_video(image_url, video_prompt)
+    # generate a random vid for tracking
+    vid = random.randint(100, 999)
+    btask = BackgroundTask(complete_video_generation, job=job, video_id=vid)
+    return vid, btask
 
 
-def complete_video_generation(request_id: str):
+def complete_video_generation(job, video_id: int) -> str:
     """
     Complete the video generation in background.
-    Polls for result and downloads when ready.
-    Triggers immediate UI update when generation is complete.
+    Returns file name of the video generated.
     """
     try:
-        download_url = poll_generated_result(request_id)
-        download_generated_result(request_id, download_url)
-        logger.info(f"Video generation completed for request_id: {request_id}")
+        result_dict, _ = job.result() # blocking call
+        vid_file_path = result_dict.get("video")
+        vid_file_name = os.path.basename(vid_file_path)
+        vid_str = str(video_id)
+        os.system(f"cp {vid_file_path} {os.curdir}/{GEN_FOLDER}/")
+        os.system(f"mv {os.curdir}/{GEN_FOLDER}/{vid_file_name} {os.curdir}/{GEN_FOLDER}/{vid_str}.mp4")
+        logger.info(f"Video generation completed")
+    except TimeoutError:
+        logger.error("Background video generation timed out")
+    except CancelledError:
+        logger.error("Background video generation was cancelled")
     except Exception as e:
-        logger.error(f"Background video generation failed for {request_id}: {str(e)}")
+        logger.error(f"Background video generation failed: {str(e)}")
 
 
 ## VIEW ##
@@ -703,9 +741,8 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile = None,
     )
     # Return loading spinner immediately
     loading_display = Div(
-        Div(cls="spinner"),
         H3("Generating your biography..."),
-        P("This may take a moment. Please wait."),
+        Div(cls="spinner", id="title-spinner", style="display:inline", hx_swap_oob="true"),
         cls="loading-container",
         hx_post="/process",
         hx_trigger="load",
@@ -756,6 +793,7 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
     """
     try:
         # Call the LLM to generate the biography and image prompt
+        logger.info("Calling LLM to generate wiki...")
         llm_prompt, image_prompt = prepare_prompt(name, job, place)
         html_out = await call_anthropic(llm_prompt)
         out = cleanup_html_output(html_out)
@@ -768,10 +806,14 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
 
         # Start video generation in background and get request_id.
         # Requires portrait image to be ready first, so we do it in background task later.
-        llm_prompt = expand_prompt(name, job, place)
-        video_prompt = await call_anthropic(llm_prompt)
         image_url = poll_generated_result(request_id)
-        video_request_id, video_task = start_video_generation(image_url, video_prompt)
+        if image_url != "":
+            logger.info(f"Starting video generation after portrait is ready.")
+            # Prepare video prompt
+            video_prompt = await call_anthropic(prompt=expand_prompt(job, place))
+            str_index = video_prompt.find("subject".lower())
+            video_prompt = video_prompt[str_index:]
+            vid, video_task = start_video_generation(image_url, video_prompt)
 
         # Return updates to show the iframe immediately with the placeholder image
         show_iframe = Iframe(
@@ -781,7 +823,7 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
             id="content-iframe",
             hx_swap_oob="true"
         )
-        return show_iframe, portrait_reload(request_id), bck_task, video_reload(video_request_id), video_task
+        return show_iframe, portrait_reload(request_id), bck_task, video_reload(str(vid)), video_task
 
     except Exception as e:
         logger.error(f"Error processing form: {str(e)}")
@@ -843,5 +885,35 @@ def output_file():
             hx_swap_oob="true"
         )
         return show_message, hide_iframe
+
+
+@rt("/clear_generated_assets")
+def clear_assets(request, session):
+    """Authenticated POST endpoint to clear generated assets"""
+    # Add simple authentication check
+    api_key = request.headers.get("Authorization")
+    if api_key != f"Bearer {llm_api_key}":  # Replace with your key
+        return {"status": "error", "message": "Unauthorized"}, 401
+    
+    try:
+        assets_path = os.path.join(os.getcwd(), GEN_FOLDER)
+        
+        if not os.path.exists(assets_path):
+            os.makedirs(assets_path)  # Recreate if it doesn't exist
+            return {"status": "success", "message": f"Created empty {GEN_FOLDER} directory"}
+        
+        # Clear all contents
+        for filename in os.listdir(assets_path):
+            file_path = os.path.join(assets_path, filename)
+            if os.path.isfile(file_path):
+                os.unlink(file_path)
+
+        logger.info(f"Successfully cleared {GEN_FOLDER} directory")
+        return {"status": "success", "message": f"Successfully cleared {GEN_FOLDER} directory"}
+        
+    except Exception as e:
+        logger.error(f"Error clearing assets: {str(e)}")
+        return {"status": "error", "message": str(e)}, 500
+
 
 serve()
