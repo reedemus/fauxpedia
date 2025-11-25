@@ -719,7 +719,7 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         if image_url != "":
             logger.info(f"Starting video generation after portrait is ready.")
             # Prepare video prompt
-            video_prompt = await call_anthropic(prompt=expand_prompt(job, place), image=image_url)
+            video_prompt = await call_anthropic(prompt=expand_prompt(job, place))
             str_index = video_prompt.find("subject".lower())
             video_prompt = video_prompt[str_index:]
             vid, video_task = start_video_generation(image_url, video_prompt)
