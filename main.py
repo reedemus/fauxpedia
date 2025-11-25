@@ -1,4 +1,5 @@
 import os, json, time, base64, tempfile, logging, time, httpx, random
+import datetime as dt
 from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
 from bs4 import BeautifulSoup
@@ -800,13 +801,13 @@ def output_file():
         return show_message, hide_iframe
 
 
-@rt("/clear_generated_assets")
-def clear_assets(request, session):
+@rt("/assets/clear_all")
+def post(request, session):
     """Authenticated POST endpoint to clear generated assets"""
     # Add simple authentication check
     api_key = request.headers.get("Authorization")
     if api_key != f"Bearer {llm_api_key}":  # Replace with your key
-        return {"status": "error", "message": "Unauthorized"}, 401
+        return Response("Unauthorized", 401)
     
     try:
         assets_path = os.path.join(os.getcwd(), GEN_FOLDER)
@@ -826,6 +827,35 @@ def clear_assets(request, session):
         
     except Exception as e:
         logger.error(f"Error clearing assets: {str(e)}")
+        return {"status": "error", "message": str(e)}, 500
+
+
+@rt("/assets/list_all")
+def get(request, session):
+    """List all files in the generated assets directory"""
+    # Add simple authentication check
+    api_key = request.headers.get("Authorization")
+    if api_key != f"Bearer {llm_api_key}":  # Replace with your key
+        return Response("Unauthorized", 401)
+
+    try:
+        assets_path = os.path.join(os.getcwd(), GEN_FOLDER)
+        if not os.path.exists(assets_path):
+            return {"status": "error", "message": f"Directory {GEN_FOLDER} does not exist"}, 404
+
+        files = []
+        for filename in os.listdir(assets_path):
+            file_path = os.path.join(assets_path, filename)
+            if os.path.isfile(file_path):
+                files.append({
+                    "name": filename,
+                    "size": os.path.getsize(file_path),
+                    "last_modified": dt.datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
+                })
+        logger.info(f"Sent list of files in {GEN_FOLDER} directory")
+        return {"status": "success", "files": files}
+    except Exception as e:
+        logger.error(f"Error listing assets: {str(e)}")
         return {"status": "error", "message": str(e)}, 500
 
 
