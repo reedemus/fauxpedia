@@ -20,6 +20,9 @@ GEN_FOLDER = "./generated"
 os.makedirs(GEN_FOLDER, exist_ok=True)
 
 # Configure basic logging for this module
+# Delete log file on each run
+if os.path.exists("main.log"):
+    os.remove("main.log")
 logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
