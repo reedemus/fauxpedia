@@ -14,6 +14,9 @@ hf_api_key = os.environ.get("HFACE_API_KEY")
 hf_space_url = os.environ.get("HF_SPACE_URL")
 img_service_key = os.environ.get("IMGBB_API_KEY")
 
+# folder for generated assets
+GEN_FOLDER = "./generated"
+os.makedirs(GEN_FOLDER, exist_ok=True)
 
 # Configure basic logging for this module
 logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -195,8 +198,8 @@ def poll_generated_result(request_id: str) -> str:
 def download_generated_result(request_id: str, url: str) -> str:
     """Download generated image/video from url.
     Returns local path of saved image/video"""
-    saved_image_path = f"assets/{request_id}.jpeg"
-    saved_video_path = f"assets/{request_id}.mp4"
+    saved_image_path = f"{GEN_FOLDER}/{request_id}.jpeg"
+    saved_video_path = f"{GEN_FOLDER}/{request_id}.mp4"
     return_val = ""
 
     if "data:image/jpeg;base64" in url:
@@ -253,7 +256,7 @@ def call_generate_video(image_url: str, scene_prompt: str):
 
 def portrait_reload(id: str):
     """Update the portrait image in output.html and trigger UI refresh"""
-    if os.path.exists(f"assets/{id}.jpeg"):
+    if os.path.exists(f"{GEN_FOLDER}/{id}.jpeg"):
         logger.info(f"Found generated image for {id}, updating output.html")
         
         # Open output.html and replace the image src using sync file operations
@@ -264,8 +267,8 @@ def portrait_reload(id: str):
             # Find the portrait image element by ID and update it
             portrait_img = soup.find('img', id='portrait-image')
             if portrait_img:
-                portrait_img['src'] = f"assets/{id}.jpeg"
-                logger.info(f"Updated image src to assets/{id}.jpeg")
+                portrait_img['src'] = f"{GEN_FOLDER}/{id}.jpeg"
+                logger.info(f"Updated image src to {GEN_FOLDER}/{id}.jpeg")
                 
                 file.seek(0)
                 file.write(str(soup))
@@ -313,7 +316,7 @@ def portrait_reload(id: str):
 
 def video_reload(vid: str):
     """Update the video in output.html and trigger UI refresh"""
-    if os.path.exists(f"assets/{vid}.mp4"):
+    if os.path.exists(f"{GEN_FOLDER}/{vid}.mp4"):
         logger.info(f"Found generated video for {vid}, updating output.html")
         
         # Open output.html and replace the video src using sync file operations
@@ -325,7 +328,7 @@ def video_reload(vid: str):
             video_tag = soup.find('video', id='portrait-video')
             if video_tag:
                 video_tag['loop'] = ""
-                video_tag['src'] = f"assets/{vid}.mp4"
+                video_tag['src'] = f"{GEN_FOLDER}/{vid}.mp4"
                 
                 file.seek(0)
                 file.write(str(soup))
@@ -361,7 +364,7 @@ def video_reload(vid: str):
             "🔄 Video generation in progress...",
             id="video-placeholder",
             hx_post=f"/video_status/{vid}",
-            hx_trigger="every 1s",
+            hx_trigger="every 2s",
             hx_swap="outerHTML",
             style="background-color: #f0f8ff; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px;"
         )
@@ -422,8 +425,8 @@ def complete_video_generation(job, video_id: int) -> str:
         vid_file_path = result_dict.get("video")
         vid_file_name = os.path.basename(vid_file_path)
         vid_str = str(video_id)
-        os.system(f"cp {vid_file_path} {os.curdir}/assets/")
-        os.system(f"mv {os.curdir}/assets/{vid_file_name} {os.curdir}/assets/{vid_str}.mp4")
+        os.system(f"cp {vid_file_path} {os.curdir}/{GEN_FOLDER}/")
+        os.system(f"mv {os.curdir}/{GEN_FOLDER}/{vid_file_name} {os.curdir}/{GEN_FOLDER}/{vid_str}.mp4")
         logger.info(f"Video generation completed")
     except TimeoutError:
         logger.error("Background video generation timed out")
@@ -703,6 +706,7 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
     """
     try:
         # Call the LLM to generate the biography and image prompt
+        logger.info("Calling LLM to generate wiki...")
         llm_prompt, image_prompt = prepare_prompt(name, job, place)
         html_out = await call_anthropic(llm_prompt)
         out = cleanup_html_output(html_out)
