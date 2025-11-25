@@ -504,6 +504,11 @@ style = Style("""
 # Initialize the app, passing in our custom styles
 app, rt = fast_app(hdrs=(style,))
 
+@rt("/{fname:path}.{ext:static}")
+def static_files(fname: str, ext: str):
+    """Serve static files from the static directory."""
+    return FileResponse(f"static/{fname}.{ext}")
+
 @rt("/")
 def index():
     """
@@ -551,14 +556,16 @@ def index():
 @rt("/open_modal")
 def open_modal():
     """
-    Route that serves the user input modal dialog.
+    Route that serves the user input modal dialog with webcam and file upload options.
     
     Called via HTMX when the "Start" button is clicked. Creates and returns
-    a DialogX modal containing a form for user input.
+    a DialogX modal containing a form for user input with tab switching between
+    file upload and webcam capture.
     
     Returns:
         DialogX modal with:
-        - Form fields for name, job, place, and photo upload
+        - Form fields for name, job, place
+        - Tab interface for photo upload or webcam capture
         - Submit button that triggers form processing
         - Escape key handler for modal dismissal
         - Auto-focus on the name input field
@@ -566,11 +573,53 @@ def open_modal():
     return DialogX(
         Article(
             H3("Enter Your Details"),
+            # Include CSS and JS for webcam functionality
+            Link(rel="stylesheet", href="/static/css/webcam.css"),
+            Script(src="/static/js/webcam.js"),
+            
             Form(
                 Input(name="name", placeholder="Name", required=True, autofocus=True),
                 Input(name="job", placeholder="Job", required=True),
                 Input(name="place", placeholder="The place/environment of where you work", required=True),
-                Input(name="photo", placeholder="photo of you with clear face", type="file", accept="image/*", required=True),
+                
+                # Photo input section with radio button interface
+                Div(
+                    H4("Add Your Photo"),
+                    # Radio buttons
+                    Div(
+                        Div(
+                            Input(type="radio", id="upload-radio", name="input-method", value="upload", onchange="switchInputMethod()", checked=True),
+                            Label("Upload File", for_="upload-radio"),
+                            cls="radio-option"
+                        ),
+                        Div(
+                            Input(type="radio", id="webcam-radio", name="input-method", value="webcam", onchange="switchInputMethod()"),
+                            Label("Use Webcam", for_="webcam-radio"),
+                            cls="radio-option"
+                        ),
+                        cls="radio-container"
+                    ),
+                    
+                    # Upload section (default)
+                    Div(
+                        Input(name="photo", type="file", accept="image/*", id="file-input"),
+                        id="upload-section"
+                    ),
+                    
+                    # Webcam section (initially hidden)
+                    Div(
+                        Video(id="webcam-video", width="320", height="240", autoplay=True, style="display:none"),
+                        Canvas(id="webcam-canvas", width="320", height="240", style="display:none"),
+                        Br(),
+                        Button("Capture Photo", type="button", onclick="capturePhoto()", id="capture-photo", style="display:none"),
+                        Button("Retake", type="button", onclick="retakePhoto()", id="retake-photo", style="display:none"),
+                        Input(name="webcam_data", type="hidden", id="webcam-data"),
+                        id="webcam-section",
+                        style="display:none"
+                    ),
+                    id="photo-input-section"
+                ),
+                
                 Button("Enter", type="submit"),
                 # Form attributes for HTMX
                 hx_post="/submit",
@@ -624,19 +673,20 @@ def dismiss_modal():
 
 
 @rt("/submit")
-async def submit_form(name: str, job: str, place: str, photo: UploadFile):
+async def submit_form(name: str, job: str, place: str, photo: UploadFile = None, webcam_data: str = None):
     """
     Route that handles form submission and initiates biography generation.
     
-    Receives user input from the modal form, saves the uploaded photo to a
-    temporary file, and immediately returns a loading spinner while triggering
-    background processing.
+    Receives user input from the modal form, handles both file uploads and webcam captures,
+    saves the photo to a temporary file, and immediately returns a loading spinner while 
+    triggering background processing.
     
     Args:
         name (str): Person's name for the biography
         job (str): Person's profession/job title
         place (str): Work environment or location
-        photo (UploadFile): User's photo file for AI image generation
+        photo (UploadFile, optional): User's photo file for AI image generation
+        webcam_data (str, optional): Base64 encoded webcam capture data
     
     Returns:
         Multiple elements with out-of-band swaps:
@@ -644,10 +694,47 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile):
         - Closed modal elements to dismiss the form
         - Clears modal placeholder
     """
-    # Save the uploaded photo to a temporary file
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_photo:
-        temp_photo.write(await photo.read())
-        temp_photo_path = temp_photo.name
+    temp_photo_path = None
+    
+    # Handle file upload
+    if photo and photo.size > 0:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_photo:
+            temp_photo.write(await photo.read())
+            temp_photo_path = temp_photo.name
+            logger.info(f"Saved uploaded photo to {temp_photo_path}")
+    
+    # Handle webcam capture
+    elif webcam_data:
+        import base64
+        
+        try:
+            # Remove data URL prefix if present
+            if webcam_data.startswith('data:image'):
+                webcam_data = webcam_data.split(',')[1]
+            
+            # Decode base64 and save to temp file
+            image_data = base64.b64decode(webcam_data)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_photo:
+                temp_photo.write(image_data)
+                temp_photo_path = temp_photo.name
+                logger.info(f"Saved webcam capture to {temp_photo_path}")
+        except Exception as e:
+            logger.error(f"Error processing webcam data: {str(e)}")
+            return Div(
+                H3("Error"),
+                P("Failed to process webcam image. Please try again."),
+                cls="loading-container"
+            )
+    
+    # Return error if no photo provided
+    else:
+        return Div(
+            H3("Error"),
+            P("Please provide a photo either by file upload or webcam capture."),
+            cls="loading-container"
+        )
+    
+    # Continue with existing processing if we have a photo
 
     show_info = Div(
         style="display:block;",
