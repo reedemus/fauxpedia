@@ -36,10 +36,8 @@ def prepare_prompt(name: str, job: str, place: str) -> tuple[str, str]:
     llm_prompt = f"""
 Create a fictional and funny wikipedia biography of {name} as a {job} from {place}. 
 The output format must be html and css in typical wikipedia format. Strictly no emojis in the output.
-Use the placeholder image named portrait.jpg in the assets folder from the current directory.
-The placeholder image is given by element id "portrait-image".
-Use the placeholder video named portrait.mp4 in the assets folder from the current directory.
-The placeholder video is given by element id "portrait-video".
+Use the placeholder image at src="/static/portrait.jpg" with element id "portrait-image".
+Use the placeholder video at src="/static/portrait.mp4" with element id "portrait-video".
 Use the section headers below:
 - Early life
 - Career
