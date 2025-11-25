@@ -799,4 +799,34 @@ def output_file():
         )
         return show_message, hide_iframe
 
+
+@rt("/clear_generated_assets")
+def clear_assets(request, session):
+    """Authenticated POST endpoint to clear generated assets"""
+    # Add simple authentication check
+    api_key = request.headers.get("Authorization")
+    if api_key != f"Bearer {llm_api_key}":  # Replace with your key
+        return {"status": "error", "message": "Unauthorized"}, 401
+    
+    try:
+        assets_path = os.path.join(os.getcwd(), GEN_FOLDER)
+        
+        if not os.path.exists(assets_path):
+            os.makedirs(assets_path)  # Recreate if it doesn't exist
+            return {"status": "success", "message": f"Created empty {GEN_FOLDER} directory"}
+        
+        # Clear all contents
+        for filename in os.listdir(assets_path):
+            file_path = os.path.join(assets_path, filename)
+            if os.path.isfile(file_path):
+                os.unlink(file_path)
+
+        logger.info(f"Successfully cleared {GEN_FOLDER} directory")
+        return {"status": "success", "message": f"Successfully cleared {GEN_FOLDER} directory"}
+        
+    except Exception as e:
+        logger.error(f"Error clearing assets: {str(e)}")
+        return {"status": "error", "message": str(e)}, 500
+
+
 serve()
