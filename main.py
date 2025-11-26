@@ -68,8 +68,7 @@ def cleanup_html_output(content: str) -> str:
 async def call_anthropic(prompt: str, image: str="", is_url: bool=False) -> str:
     """Call an Anthropic/Claude-style LLM endpoint."""
     client = AsyncAnthropic(
-        api_key=llm_api_key,
-        timeout=120.0  # Increase timeout to 120 seconds
+        api_key=llm_api_key
     )
 
     if len(image):
@@ -101,15 +100,22 @@ async def call_anthropic(prompt: str, image: str="", is_url: bool=False) -> str:
     else:
         input = prompt
 
-    msg = await client.messages.create(
+    async with client.messages.stream(
         model="claude-sonnet-4-5-20250929",
         messages=[
             {"role": "user", "content": input}
         ],
-        max_tokens=10240,
-    )
-    content = msg.content[0].text
-    output_tokens = msg.usage.output_tokens
+        max_tokens=8192,
+    ) as stream:
+        # Consume the stream without printing
+        async for text in stream.text_stream:
+            pass
+    
+    # Get the complete text after streaming is done
+    content = await stream.get_final_text()
+    final_message = await stream.get_final_message()
+    output_tokens = final_message.usage.output_tokens
+
     logger.info(f"Used {output_tokens} output tokens.")
     return content
 
