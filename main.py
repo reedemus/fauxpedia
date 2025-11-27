@@ -1,10 +1,15 @@
-import os, json, time, base64, tempfile, logging, time, httpx, random
+import os, json, time, base64, tempfile, logging, time, httpx, uuid
 import datetime as dt
+from datetime import datetime
+from typing import Dict
+from asyncio import CancelledError
 from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
 from bs4 import BeautifulSoup
 from fasthtml.common import *
 from starlette.background import BackgroundTask
+from starlette.requests import Request
+from starlette.responses import Response, FileResponse
 from gradio_client import Client, handle_file
 
 # Environment variables
@@ -25,6 +30,89 @@ if os.path.exists("main.log"):
     os.remove("main.log")
 logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Session tracking and user isolation
+active_sessions: Dict[str, dict] = {}
+SESSION_EXPIRY_MINUTES = 30  # Browser sessions don't timeout, but track for debugging
+
+def generate_session_id() -> str:
+    """Generate unique session identifier using UUID4"""
+    return str(uuid.uuid4())
+
+def get_user_id_from_session(sess) -> str:
+    """Get existing user ID or create new one for session"""
+    if 'user_id' not in sess:
+        sess['user_id'] = generate_session_id()
+        active_sessions[sess['user_id']] = {
+            'created': datetime.now().isoformat(),
+            'last_access': datetime.now().isoformat(),
+            'request_count': 0
+        }
+        logger.info(f"Created new session: {sess['user_id']}")
+    else:
+        # Update last access time
+        if sess['user_id'] in active_sessions:
+            active_sessions[sess['user_id']]['last_access'] = datetime.now().isoformat()
+            active_sessions[sess['user_id']]['request_count'] += 1
+    
+    return sess['user_id']
+
+def is_session_expired(session_id: str) -> bool:
+    """Check if session has expired (browser sessions don't expire, but validate existence)"""
+    return session_id not in active_sessions
+
+def cleanup_expired_sessions():
+    """Clean up expired sessions from tracking dictionary (periodic maintenance)"""
+    logger.info(f"Session cleanup completed. Active sessions: {len(active_sessions)}")
+
+def get_user_html_path(user_id: str) -> str:
+    """Get user-specific HTML file path"""
+    return f"output_{user_id}.html"
+
+def get_user_assets_dir(user_id: str) -> str:
+    """Get user-specific assets directory path"""
+    user_dir = os.path.join(GEN_FOLDER, user_id)
+    os.makedirs(user_dir, exist_ok=True)
+    return user_dir
+
+def ensure_user_directories(user_id: str):
+    """Ensure user-specific directories exist"""
+    get_user_assets_dir(user_id)  # This will create the directory if it doesn't exist
+
+def cleanup_user_assets(user_id: str) -> bool:
+    """Clean up user-specific files and directories"""
+    try:
+        # Remove user-specific HTML file
+        html_path = get_user_html_path(user_id)
+        if os.path.exists(html_path):
+            os.unlink(html_path)
+            logger.info(f"Removed user HTML: {html_path}")
+        
+        # Remove user-specific assets directory
+        user_assets_dir = get_user_assets_dir(user_id)
+        if os.path.exists(user_assets_dir):
+            import shutil
+            shutil.rmtree(user_assets_dir)
+            logger.info(f"Removed user assets: {user_assets_dir}")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error cleaning up user assets for {user_id}: {str(e)}")
+        return False
+
+def session_middleware(req, sess):
+    """Beforeware to handle session management and user isolation"""
+    user_id = get_user_id_from_session(sess)
+    # Store user_id in request scope for easy access
+    req.scope['user_id'] = user_id
+    
+    # Trigger cleanup on session expiry detection
+    if is_session_expired(user_id):
+        cleanup_user_assets(user_id)
+        # Remove from active sessions
+        if user_id in active_sessions:
+            del active_sessions[user_id]
+        logger.info(f"Cleaned up expired session: {user_id}")
 
 ## MODEL CALLS ##
 def expand_prompt(job: str, place: str) -> str:
@@ -197,11 +285,12 @@ def poll_generated_result(request_id: str) -> str:
     return return_val
 
 
-def download_generated_result(request_id: str, url: str) -> str:
-    """Download generated image/video from url.
-    Returns local path of saved image/video"""
-    saved_image_path = f"{GEN_FOLDER}/{request_id}.jpeg"
-    saved_video_path = f"{GEN_FOLDER}/{request_id}.mp4"
+def download_generated_result(request_id: str, url: str, user_id: str) -> str:
+    """Download generated image/video from url to user-specific directory"""
+    user_assets_dir = get_user_assets_dir(user_id)
+    saved_image_path = os.path.join(user_assets_dir, f"{request_id}.jpeg")
+    saved_video_path = os.path.join(user_assets_dir, f"{request_id}.mp4")
+    
     return_val = ""
 
     if "data:image/jpeg;base64" in url:
@@ -232,7 +321,7 @@ def download_generated_result(request_id: str, url: str) -> str:
                 logger.info(f"Saved generated video to {saved_video_path}")
 
     else:
-        logger.error(f"Error: download failed!")
+        logger.error(f"Error: download failed for {request_id}!")
     return return_val
 
 
@@ -256,26 +345,38 @@ def call_generate_video(image_url: str, scene_prompt: str):
     return job
 
 
-def portrait_reload(id: str):
-    """Update the portrait image in output.html and trigger UI refresh"""
-    if os.path.exists(f"{GEN_FOLDER}/{id}.jpeg"):
-        logger.info(f"Found generated image for {id}, updating output.html")
+def portrait_reload(id: str, user_id: str):
+    """Update the portrait image in user-specific HTML file and trigger UI refresh"""
+    user_assets_dir = get_user_assets_dir(user_id)
+    image_path = os.path.join(user_assets_dir, f"{id}.jpeg")
+    html_file = get_user_html_path(user_id)
+    
+    if os.path.exists(image_path):
+        logger.info(f"Found generated image for {id}, updating {html_file}")
         
-        # Open output.html and replace the image src using sync file operations
-        with open("output.html", "r+") as file:
+        # Validate session before file operations
+        if is_session_expired(user_id):
+            logger.warning(f"Session expired during portrait reload for user {user_id}")
+            return Div("Session expired", id="polling-placeholder", hx_swap_oob="true")
+        
+        # Open HTML file and replace the image src using sync file operations
+        with open(html_file, "r+") as file:
             html_content = file.read()
             soup = BeautifulSoup(html_content, 'html.parser')
         
             # Find the portrait image element by ID and update it
             portrait_img = soup.find('img', id='portrait-image')
             if portrait_img:
-                portrait_img['src'] = f"{GEN_FOLDER}/{id}.jpeg"
-                logger.info(f"Updated image src to {GEN_FOLDER}/{id}.jpeg")
+                # Use relative path from user's perspective
+                relative_path = os.path.join("generated", user_id, f"{id}.jpeg")
+                portrait_img['src'] = relative_path
+                
+                logger.info(f"Updated image src to {portrait_img['src']}")
                 
                 file.seek(0)
                 file.write(str(soup))
                 file.truncate()
-                logger.info("Successfully updated output.html")
+                logger.info(f"Successfully updated {html_file}")
                 
                 # Return elements for immediate UI update
                 # Update the iframe src to force refresh with cache busting
@@ -297,7 +398,7 @@ def portrait_reload(id: str):
 
                 return show_iframe, stop_polling
             else:
-                logger.warning("Portrait image element not found in output.html")
+                logger.warning(f"Portrait image element not found in {html_file}")
                 return Div("Portrait image element not found", id="polling-placeholder", hx_swap_oob="true")
     else:
         logger.info(f"Generated image for {id} not found yet, continuing to poll")
@@ -316,13 +417,22 @@ def portrait_reload(id: str):
         return portrait_poller, show_header_spinner
 
 
-def video_reload(vid: str):
-    """Update the video in output.html and trigger UI refresh"""
-    if os.path.exists(f"{GEN_FOLDER}/{vid}.mp4"):
-        logger.info(f"Found generated video for {vid}, updating output.html")
+def video_reload(vid: str, user_id: str):
+    """Update the video in user-specific HTML file and trigger UI refresh"""
+    user_assets_dir = get_user_assets_dir(user_id)
+    video_path = os.path.join(user_assets_dir, f"{vid}.mp4")
+    html_file = get_user_html_path(user_id)
+    
+    if os.path.exists(video_path):
+        logger.info(f"Found generated video for {vid}, updating {html_file}")
         
-        # Open output.html and replace the video src using sync file operations
-        with open("output.html", "r+") as file:
+        # Validate session before file operations
+        if is_session_expired(user_id):
+            logger.warning(f"Session expired during video reload for user {user_id}")
+            return Div("Session expired", id="video-placeholder", hx_swap_oob="true")
+        
+        # Open HTML file and replace the video src using sync file operations
+        with open(html_file, "r+") as file:
             html_content = file.read()
             soup = BeautifulSoup(html_content, 'html.parser')
         
@@ -330,12 +440,14 @@ def video_reload(vid: str):
             video_tag = soup.find('video', id='portrait-video')
             if video_tag:
                 video_tag['loop'] = ""
-                video_tag['src'] = f"{GEN_FOLDER}/{vid}.mp4"
+                # Use relative path from user's perspective
+                relative_path = os.path.join("generated", user_id, f"{vid}.mp4")
+                video_tag['src'] = relative_path
                 
                 file.seek(0)
                 file.write(str(soup))
                 file.truncate()
-                logger.info("Successfully updated output.html")
+                logger.info(f"Successfully updated {html_file}")
                 
                 # Return elements for immediate UI update
                 # Update the iframe src to force refresh with cache busting
@@ -357,7 +469,7 @@ def video_reload(vid: str):
 
                 return show_iframe, stop_polling, hide_header_spinner
             else:
-                logger.warning("Video element not found in output.html")
+                logger.warning(f"Video element not found in {html_file}")
                 return Div("Video element not found", id="video-placeholder", hx_swap_oob="true")
     else:
         logger.info(f"Generated video for {vid} not found yet, continuing to poll")
@@ -378,64 +490,92 @@ def video_reload(vid: str):
         return video_poller, show_header_spinner
 
 
-def start_portrait_generation(photo_path: str, image_prompt: str)-> tuple[str, BackgroundTask]:
+def start_portrait_generation(photo_path: str, image_prompt: str, user_id: str)-> tuple[str, BackgroundTask]:
     """
     Start portrait generation and return request_id immediately.
-    The actual image generation happens in background.
+    The actual image generation happens in background with user-specific context.
     """
     # Upload photo and start generation (these are quick)
     photo_url = upload_photo(photo_path)
     request_id = call_generate_image(photo_url, image_prompt)
     
-    # Start the polling and download in background
-    btask = BackgroundTask(complete_portrait_generation, request_id=request_id)
+    # Start the polling and download in background with user context
+    btask = BackgroundTask(complete_portrait_generation, request_id=request_id, user_id=user_id)
     return request_id, btask
 
-def complete_portrait_generation(request_id: str):
+def complete_portrait_generation(request_id: str, user_id: str):
     """
-    Complete the portrait generation in background.
-    Polls for result and downloads when ready.
+    Complete the portrait generation in background with session validation.
+    Polls for result and downloads when ready to user-specific directory.
     Triggers immediate UI update when generation is complete.
     """
     try:
+        # Validate session before starting background work
+        if is_session_expired(user_id):
+            logger.warning(f"Session expired during portrait generation for user {user_id}")
+            return
+        
         download_url = poll_generated_result(request_id)
-        download_generated_result(request_id, download_url)
-        logger.info(f"Portrait generation completed for request_id: {request_id}")
+        download_generated_result(request_id, download_url, user_id)
+        logger.info(f"Portrait generation completed for request_id: {request_id}, user: {user_id}")
+        
+        # Final session validation before completion
+        if is_session_expired(user_id):
+            logger.warning(f"Session expired during portrait completion for user {user_id}")
+            return
+            
     except Exception as e:
         logger.error(f"Background portrait generation failed for {request_id}: {str(e)}")
 
 
-def start_video_generation(image_url: str, video_prompt: str) -> tuple[int, BackgroundTask]:
+def start_video_generation(image_url: str, video_prompt: str, user_id: str) -> tuple[str, BackgroundTask]:
     """
-    Start video generation and return request id immediately.
-    The actual video generation happens in background.
+    Start video generation and return collision-free video ID immediately.
+    The actual video generation happens in background with user-specific context.
     """
     job = call_generate_video(image_url, video_prompt)
-    # generate a random vid for tracking
-    vid = random.randint(100, 999)
-    btask = BackgroundTask(complete_video_generation, job=job, video_id=vid)
+    
+    # Generate collision-free video ID using user_id and timestamp
+    vid = f"{user_id}_{int(time.time())}"
+    
+    btask = BackgroundTask(complete_video_generation, job=job, video_id=vid, user_id=user_id)
     return vid, btask
 
 
-def complete_video_generation(job, video_id: int) -> str:
+def complete_video_generation(job, video_id: str, user_id: str) -> str:
     """
-    Complete the video generation in background.
-    Returns file name of the video generated.
+    Complete the video generation in background with session validation.
+    Returns file name of the video generated in user-specific directory.
     """
     try:
+        # Validate session before starting video processing
+        if is_session_expired(user_id):
+            logger.warning(f"Session expired during video generation for user {user_id}")
+            return ""
+        
         result_dict, _ = job.result() # blocking call
         vid_file_path = result_dict.get("video")
         vid_file_name = os.path.basename(vid_file_path)
-        vid_str = str(video_id)
-        os.system(f"cp {vid_file_path} {os.curdir}/{GEN_FOLDER}/")
-        os.system(f"mv {os.curdir}/{GEN_FOLDER}/{vid_file_name} {os.curdir}/{GEN_FOLDER}/{vid_str}.mp4")
-        logger.info(f"Video generation completed")
+        
+        # Save to user-specific directory
+        user_assets_dir = get_user_assets_dir(user_id)
+        destination_path = os.path.join(user_assets_dir, f"{video_id}.mp4")
+        os.system(f"cp {vid_file_path} {destination_path}")
+        logger.info(f"Video generation completed for user {user_id}: {destination_path}")
+            
+        # Final session validation
+        if is_session_expired(user_id):
+            logger.warning(f"Session expired during video completion for user {user_id}")
+            return ""
+            
     except TimeoutError:
         logger.error("Background video generation timed out")
     except CancelledError:
         logger.error("Background video generation was cancelled")
     except Exception as e:
         logger.error(f"Background video generation failed: {str(e)}")
+        
+    return ""
 
 
 ## VIEW ##
@@ -502,19 +642,55 @@ style = Style("""
     }
 """)
 
-# Initialize the app, passing in our custom styles
-app, rt = fast_app(hdrs=(style,))
+# Initialize the app with session middleware and custom styles
+app, rt = fast_app(
+    hdrs=(style,),
+    
+    # Session configuration
+    session={
+        'secret_key': 'your-secret-key-change-this-in-production',
+        'cookie_name': 'fauxpedia_session',
+        'max_age': None,  # Browser session cookie - expires when tab closes
+        'same_site': 'lax',
+        'https_only': False  # Set to True in production with HTTPS
+    },
+    
+    # Add session middleware
+    before=session_middleware
+)
 
 @rt("/{fname:path}.{ext:static}")
 def static_files(fname: str, ext: str):
     """Serve static files from the static directory."""
     return FileResponse(f"static/{fname}.{ext}")
 
+@rt("/generated/{user_id}/{fname:path}.{ext:static}")
+def user_assets(request: Request, user_id: str, fname: str, ext: str):
+    """Serve user-specific generated assets with session validation."""
+    session_user_id = request.session.get('user_id')
+    
+    # Only allow users to access their own assets
+    if not session_user_id or session_user_id != user_id:
+        logger.warning(f"Unauthorized asset access attempt: session_user={session_user_id}, requested_user={user_id}")
+        return Response("Unauthorized", 403)
+    
+    user_assets_dir = get_user_assets_dir(user_id)
+    asset_path = os.path.join(user_assets_dir, f"{fname}.{ext}")
+    
+    if not os.path.exists(asset_path):
+        logger.warning(f"Asset not found: {asset_path}")
+        return Response("Not Found", 404)
+    
+    return FileResponse(asset_path)
+
 @rt("/")
-def index():
+def index(request: Request):
     """
-    Main landing page route that displays the application interface.
+    Main landing page route that displays the application interface with session awareness.
     """
+    user_id = request.session.get('user_id')
+    logger.info(f"Index page accessed by user: {user_id}")
+    
     start_btn = Button(
         "Start",
         id="start-btn",
@@ -674,15 +850,16 @@ def dismiss_modal():
 
 
 @rt("/submit")
-async def submit_form(name: str, job: str, place: str, photo: UploadFile = None, webcam_data: str = None):
+async def submit_form(request: Request, name: str, job: str, place: str, photo: UploadFile = None, webcam_data: str = None):
     """
-    Route that handles form submission and initiates biography generation.
+    Route that handles form submission and initiates biography generation with session isolation.
     
     Receives user input from the modal form, handles both file uploads and webcam captures,
-    saves the photo to a temporary file, and immediately returns a loading spinner while 
+    saves the photo to a user-specific temporary file, and returns a loading spinner while 
     triggering background processing.
     
     Args:
+        request (Request): FastHTML request object containing session data
         name (str): Person's name for the biography
         job (str): Person's profession/job title
         place (str): Work environment or location
@@ -695,6 +872,16 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile = None,
         - Closed modal elements to dismiss the form
         - Clears modal placeholder
     """
+    user_id = request.session.get('user_id')
+    if not user_id:
+        logger.error("No session found during form submission")
+        return Div(
+            H3("Session Error"),
+            P("Please refresh the page and try again."),
+            cls="loading-container"
+        )
+    
+    logger.info(f"Form submitted by user: {user_id}")
     temp_photo_path = None
     
     # Handle file upload
@@ -768,15 +955,16 @@ async def submit_form(name: str, job: str, place: str, photo: UploadFile = None,
 
 
 @rt("/process") 
-async def process_form(name: str, job: str, place: str, photo_path: str):
+async def process_form(request: Request, name: str, job: str, place: str, photo_path: str):
     """
-    Route that performs the actual biography generation and AI image processing.
+    Route that performs the actual biography generation and AI image processing with session isolation.
     
     Called automatically by HTMX after the loading spinner is displayed.
     Orchestrates the complete workflow: LLM text generation, image upload,
-    AI image generation, and file updates.
+    AI image generation, and file updates with user-specific paths.
     
     Args:
+        request (Request): FastHTML request object containing session data
         name (str): Person's name for the biography
         job (str): Person's profession/job title  
         place (str): Work environment or location
@@ -787,23 +975,42 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         On error: Error message with retry button
         
     Workflow:
-        1. Generate Wikipedia biography text using Anthropic LLM
-        2. Upload user photo to WaveSpeed AI service
-        3. Generate AI image based on user photo and job context
-        4. Update output.html with generated content and new image
-        5. Display results in iframe
+        1. Validate session and create user-specific directories
+        2. Generate Wikipedia biography text using Anthropic LLM
+        3. Upload user photo to WaveSpeed AI service
+        4. Generate AI image based on user photo and job context
+        5. Update user-specific HTML with generated content and new image
+        6. Display results in iframe
     """
+    user_id = request.session.get('user_id')
+    if not user_id or is_session_expired(user_id):
+        logger.error(f"Invalid or expired session during processing: {user_id}")
+        return Div(
+            H3("Session Error"),
+            P("Your session has expired. Please refresh the page and try again."),
+            cls="loading-container"
+        )
+    
+    logger.info(f"Processing biography for user: {user_id}")
+    
     try:
+        # Create user-specific directories and get paths
+        ensure_user_directories(user_id)
+        user_html_path = get_user_html_path(user_id)
+        
         # Call the LLM to generate the biography and image prompt
         logger.info("Calling LLM to generate wiki...")
         llm_prompt, image_prompt = prepare_prompt(name, job, place)
         html_out = await call_anthropic(llm_prompt)
         out = cleanup_html_output(html_out)
-        with open("output.html", "w") as f:
+        
+        # Write to user-specific HTML file
+        with open(user_html_path, "w") as f:
             f.write(out)
+        logger.info(f"Generated biography saved to {user_html_path}")
 
-        # Start portrait image generation in background and get request_id
-        request_id, bck_task = start_portrait_generation(photo_path, image_prompt)
+        # Start portrait image generation in background with user-specific ID
+        request_id, bck_task = start_portrait_generation(photo_path, image_prompt, user_id)
         logger.info(f"Started portrait generation with request_id: {request_id}")
 
         # Start video generation in background and get request_id.
@@ -815,7 +1022,7 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
             video_prompt = await call_anthropic(prompt=expand_prompt(job, place))
             str_index = video_prompt.find("subject".lower())
             video_prompt = video_prompt[str_index:]
-            vid, video_task = start_video_generation(image_url, video_prompt)
+            vid, video_task = start_video_generation(image_url, video_prompt, user_id)
 
         # Return updates to show the iframe immediately with the placeholder image
         show_iframe = Iframe(
@@ -825,7 +1032,7 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
             id="content-iframe",
             hx_swap_oob="true"
         )
-        return show_iframe, portrait_reload(request_id), bck_task, video_reload(str(vid)), video_task
+        return show_iframe, portrait_reload(request_id, user_id), bck_task, video_reload(str(vid), user_id), video_task
 
     except Exception as e:
         logger.error(f"Error processing form: {str(e)}")
@@ -840,35 +1047,43 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
 
 
 @rt("/portrait_img/{id}")
-def get_portrait_img(id: str):
-    logger.info(f"Receive polling request for image id: {id}")
-    return portrait_reload(id)
+def get_portrait_img(request: Request, id: str):
+    user_id = request.session.get('user_id')
+    logger.info(f"Receive polling request for image id: {id} from user: {user_id}")
+    return portrait_reload(id, user_id)
 
 
 @rt('/video_status/{id}')
-def video_status(id: str):
-    logger.info(f"Receive polling request for video id: {id}")
-    return video_reload(id)
+def video_status(request: Request, id: str):
+    user_id = request.session.get('user_id')
+    logger.info(f"Receive polling request for video id: {id} from user: {user_id}")
+    return video_reload(id, user_id)
 
 
 @rt("/output_file")
-def output_file():
+def output_file(request: Request):
     """
-    Route that serves the generated Wikipedia biography HTML file.
+    Route that serves the generated Wikipedia biography HTML file with session isolation.
     
-    Attempts to serve the output.html file containing the generated biography.
+    Attempts to serve the user-specific HTML file containing the generated biography.
     If the file doesn't exist (no content has been generated yet), returns
     a helpful message and manages UI state.
     
     Returns:
-        On success: The generated HTML file (output.html)
+        On success: The user-specific generated HTML file
         On FileNotFoundError: 
         - Message indicating no content exists yet
         - Hides the iframe to prevent loading errors
         - Directs user to use the Start button
     """
+    user_id = request.session.get('user_id')
+    if not user_id:
+        return Response("Session required", 403)
+    
     try:
-        return File("output.html")
+        user_html_path = get_user_html_path(user_id)
+        logger.info(f"Serving output file for user: {user_id} from {user_html_path}")
+        return FileResponse(user_html_path)
     except FileNotFoundError:
         # If no content exists yet, show message in info display and keep iframe hidden
         show_message = Div(
