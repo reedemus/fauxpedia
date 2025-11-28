@@ -1136,7 +1136,7 @@ def post(request, session):
             elif os.path.isdir(entry_path):
                 shutil.rmtree(entry_path)
         # Remove HTML files aka the wiki in the current directory
-        os.system(f"rm -rf *.html")
+        os.system("rm -rf *.html")
 
         logger.info(f"Successfully cleared {GEN_FOLDER} directory and subfolders")
         return {"status": "success", "message": f"Successfully cleared {GEN_FOLDER} directory and subfolders"}
