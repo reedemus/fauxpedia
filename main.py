@@ -1177,7 +1177,7 @@ def get(request, session):
         return {"status": "error", "message": str(e)}, 500
 
 @rt("/health")
-def post(request, session):
+def get(request, session):
     """Simple health check endpoint"""
     return {"status": "OK", "message": "running"}
 
