@@ -19,6 +19,7 @@ gen_image_api_key = os.environ.get("WAVESPEED_API_KEY")
 hf_api_key = os.environ.get("HFACE_API_KEY")
 hf_space_url = os.environ.get("HF_SPACE_URL")
 img_service_key = os.environ.get("IMGBB_API_KEY")
+session_key=os.environ.get("SESSION_SECRET_KEY")
 
 # folder for generated assets
 GEN_FOLDER = "./generated"
@@ -657,11 +658,11 @@ app, rt = fast_app(
     
     # Session configuration
     session={
-        'secret_key': 'your-secret-key-change-this-in-production',
+        'secret_key': session_key,
         'cookie_name': 'fauxpedia_session',
         'max_age': None,  # Browser session cookie - expires when tab closes
         'same_site': 'lax',
-        'https_only': False  # Set to True in production with HTTPS
+        'https_only': True  # Set to True in production with HTTPS
     },
     
     # Add session middleware
