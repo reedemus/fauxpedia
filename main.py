@@ -1,4 +1,4 @@
-import os, json, time, base64, tempfile, logging, time, httpx, uuid
+import os, json, time, base64, tempfile, logging, time, httpx, uuid, shutil
 import datetime as dt
 from datetime import datetime
 from typing import Dict
@@ -1123,20 +1123,22 @@ def post(request, session):
     
     try:
         assets_path = os.path.join(os.getcwd(), GEN_FOLDER)
-        
+
         if not os.path.exists(assets_path):
             os.makedirs(assets_path)  # Recreate if it doesn't exist
             return {"status": "success", "message": f"Created empty {GEN_FOLDER} directory"}
-        
-        # Clear all contents
-        for filename in os.listdir(assets_path):
-            file_path = os.path.join(assets_path, filename)
-            if os.path.isfile(file_path):
-                os.unlink(file_path)
 
-        logger.info(f"Successfully cleared {GEN_FOLDER} directory")
-        return {"status": "success", "message": f"Successfully cleared {GEN_FOLDER} directory"}
-        
+        # Remove all files and subfolders recursively
+        for entry in os.listdir(assets_path):
+            entry_path = os.path.join(assets_path, entry)
+            if os.path.isfile(entry_path):
+                os.unlink(entry_path)
+            elif os.path.isdir(entry_path):
+                shutil.rmtree(entry_path)
+
+        logger.info(f"Successfully cleared {GEN_FOLDER} directory and subfolders")
+        return {"status": "success", "message": f"Successfully cleared {GEN_FOLDER} directory and subfolders"}
+
     except Exception as e:
         logger.error(f"Error clearing assets: {str(e)}")
         return {"status": "error", "message": str(e)}, 500
@@ -1156,15 +1158,16 @@ def get(request, session):
             return {"status": "error", "message": f"Directory {GEN_FOLDER} does not exist"}, 404
 
         files = []
-        for filename in os.listdir(assets_path):
-            file_path = os.path.join(assets_path, filename)
-            if os.path.isfile(file_path):
+        for root, dirs, filenames in os.walk(assets_path):
+            for filename in filenames:
+                file_path = os.path.join(root, filename)
+                rel_path = os.path.relpath(file_path, assets_path)
                 files.append({
-                    "name": filename,
+                    "name": rel_path,
                     "size": os.path.getsize(file_path),
                     "last_modified": dt.datetime.fromtimestamp(os.path.getmtime(file_path)).strftime('%Y-%m-%d %H:%M:%S')
                 })
-        logger.info(f"Sent list of files in {GEN_FOLDER} directory")
+        logger.info(f"Sent list of files in {GEN_FOLDER} and subfolders")
         return {"status": "success", "files": files}
     except Exception as e:
         logger.error(f"Error listing assets: {str(e)}")
