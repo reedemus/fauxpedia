@@ -8,5 +8,5 @@ dependencies = [
     "python-dotenv",
     "anthropic>=0.72.0",
     "python-fasthtml>=0.12.33",
-    "gradio_client"
+    "gradio-client"
 ]
