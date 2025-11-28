@@ -106,13 +106,16 @@ def session_middleware(req, sess):
     # Store user_id in request scope for easy access
     req.scope['user_id'] = user_id
     
-    # Trigger cleanup on session expiry detection
+    # If session expired, create a new one instead of showing 'session expired'
     if is_session_expired(user_id):
-        cleanup_user_assets(user_id)
-        # Remove from active sessions
-        if user_id in active_sessions:
-            del active_sessions[user_id]
-        logger.info(f"Cleaned up expired session: {user_id}")
+        logger.info(f"Session expired for user {user_id}, creating new session.")
+        sess['user_id'] = generate_session_id()
+        active_sessions[sess['user_id']] = {
+            'created': datetime.now().isoformat(),
+            'last_access': datetime.now().isoformat(),
+            'request_count': 0
+        }
+        req.scope['user_id'] = sess['user_id']
 
 ## MODEL CALLS ##
 def expand_prompt(job: str, place: str) -> str:
