@@ -955,5 +955,10 @@ def get(request, session):
         logger.error(f"Error listing assets: {str(e)}")
         return {"status": "error", "message": str(e)}, 500
 
+@rt("/health")
+def get(request, session):
+    """Simple health check endpoint"""
+    return {"status": "OK", "message": "running"}
+
 
 serve()
