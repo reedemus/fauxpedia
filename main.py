@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 # Session tracking and user isolation
 active_sessions: Dict[str, dict] = {}
-SESSION_EXPIRY_MINUTES = 30  # Browser sessions don't timeout, but track for debugging
 
 def generate_session_id() -> str:
     """Generate unique session identifier using UUID4"""
@@ -485,7 +484,6 @@ def video_reload(vid: str, user_id: str):
         logger.info(f"Generated video for {vid} not found yet, continuing to poll")
         # Continue polling
         video_poller = Div(
-            "🔄 Video generation in progress...",
             id="video-placeholder",
             hx_post=f"/video_status/{vid}",
             hx_trigger="every 2s",
@@ -1141,6 +1139,7 @@ def post(request, session):
 
         logger.info(f"Successfully cleared {GEN_FOLDER} directory and subfolders")
         return {"status": "success", "message": f"Successfully cleared {GEN_FOLDER} directory and subfolders"}
+
 
     except Exception as e:
         logger.error(f"Error clearing assets: {str(e)}")
