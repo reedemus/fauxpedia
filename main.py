@@ -916,6 +916,9 @@ def post(request, session):
             if os.path.isfile(file_path):
                 os.unlink(file_path)
 
+        # Clear the generated html wiki
+        os.system("rm -rf *.html")
+
         logger.info(f"Successfully cleared {GEN_FOLDER} directory")
         return {"status": "success", "message": f"Successfully cleared {GEN_FOLDER} directory"}
         
