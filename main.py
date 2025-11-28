@@ -484,6 +484,7 @@ def video_reload(vid: str, user_id: str):
         logger.info(f"Generated video for {vid} not found yet, continuing to poll")
         # Continue polling
         video_poller = Div(
+            "🔄 Video generation in progress...",
             id="video-placeholder",
             hx_post=f"/video_status/{vid}",
             hx_trigger="every 2s",
