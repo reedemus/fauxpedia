@@ -27,9 +27,19 @@ logging.basicConfig(filename=os.path.join(os.curdir, "main.log"), level=logging.
 logger = logging.getLogger(__name__)
 
 ## MODEL CALLS ##
-def expand_prompt(job: str, place: str) -> str:
-    llm_prompt = f"""Using the attached image, expand the prompt below for a video generation model to include the subject, scene and motion: \
-        the person in the image is highly successful and famous {job} working at {place}."""
+def get_image_caption() -> str:
+    llm_prompt = f"""Provide a detailed caption for the image provided. 
+    The caption should describe the subject, setting, and any notable features in the image."""
+    return llm_prompt
+
+def prepare_video_prompt(prompt: str) -> str:
+    llm_prompt = f"""Given the description below, write a prompt for a video generation model. 
+**Description**
+{prompt}
+Use the section headers below, keep it concise and emphasize the motion aspects:
+- Subject
+- Scene
+- Motion"""
     return llm_prompt
 
 def prepare_prompt(name: str, job: str, place: str) -> tuple[str, str]:
@@ -818,9 +828,8 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         if image_url != "":
             logger.info(f"Starting video generation after portrait is ready.")
             # Prepare video prompt
-            video_prompt = await call_anthropic(prompt=expand_prompt(job, place))
-            str_index = video_prompt.find("subject".lower())
-            video_prompt = video_prompt[str_index:]
+            caption = await call_anthropic(get_image_caption(), image_url, True)
+            video_prompt = await call_anthropic(prepare_video_prompt(caption))
             vid, video_task = start_video_generation(image_url, video_prompt)
 
         # Return updates to show the iframe immediately with the placeholder image
