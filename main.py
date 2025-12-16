@@ -1,4 +1,4 @@
-import os, json, time, base64, tempfile, logging, time, httpx, random
+import os, json, time, base64, tempfile, logging, time, httpx, asyncio
 import datetime as dt
 from dotenv import load_dotenv, find_dotenv
 from anthropic import AsyncAnthropic
@@ -6,6 +6,9 @@ from bs4 import BeautifulSoup
 from fasthtml.common import *
 from starlette.background import BackgroundTask
 from gradio_client import Client, handle_file
+from gradio_client.client import Job
+
+video_gen_job: Job
 
 # Environment variables
 load_dotenv(find_dotenv())
@@ -252,7 +255,7 @@ def download_generated_result(request_id: str, url: str) -> str:
     return return_val
 
 
-def call_generate_video(image_url: str, scene_prompt: str):
+def call_generate_video(image_url: str, scene_prompt: str) -> Job:
     """Call video generation model
     Returns local path to generated video file.
     """
@@ -274,9 +277,9 @@ def call_generate_video(image_url: str, scene_prompt: str):
 
 def portrait_reload(id: str):
     """Update the portrait image in output.html and trigger UI refresh"""
-    if os.path.exists(f"{GEN_FOLDER}/{id}.jpeg"):
+    image_path = f"{GEN_FOLDER}/{id}.jpeg"
+    if os.path.exists(image_path):
         logger.info(f"Found generated image for {id}, updating output.html")
-        
         # Open output.html and replace the image src using sync file operations
         with open("output.html", "r+") as file:
             html_content = file.read()
@@ -285,9 +288,8 @@ def portrait_reload(id: str):
             # Find the portrait image element by ID and update it
             portrait_img = soup.find('img', id='portrait-image')
             if portrait_img:
-                portrait_img['src'] = f"{GEN_FOLDER}/{id}.jpeg"
-                logger.info(f"Updated image src to {GEN_FOLDER}/{id}.jpeg")
-                
+                portrait_img['src'] = image_path
+                logger.info(f"Updated image src to {image_path}")
                 file.seek(0)
                 file.write(str(soup))
                 file.truncate()
@@ -311,7 +313,10 @@ def portrait_reload(id: str):
                 # Also hide the header spinner (out-of-band swap)
                 hide_header_spinner = Div("", id="title-spinner", hx_swap_oob="true")
 
-                return show_iframe, stop_polling
+                # Start video generation after portrait image is downloaded
+                vid_task = BackgroundTask(video_tasks, id, image_path)
+
+                return show_iframe, stop_polling, hide_header_spinner, vid_task
             else:
                 logger.warning("Portrait image element not found in output.html")
                 return Div("Portrait image element not found", id="polling-placeholder", hx_swap_oob="true")
@@ -421,38 +426,58 @@ def complete_portrait_generation(request_id: str):
         logger.error(f"Background portrait generation failed for {request_id}: {str(e)}")
 
 
-def start_video_generation(image_url: str, video_prompt: str) -> tuple[int, BackgroundTask]:
+async def start_video_generation_workflow(image_id: str, gen_image_path: str):
     """
-    Start video generation and return request id immediately.
-    The actual video generation happens in background.
+    Start the complete video generation workflow in background.
+    This runs after the portrait image is ready.
     """
-    job = call_generate_video(image_url, video_prompt)
-    # generate a random vid for tracking
-    vid = random.randint(100, 999)
-    btask = BackgroundTask(complete_video_generation, job=job, video_id=vid)
-    return vid, btask
+    global video_gen_job
+    try:
+        # Generate caption for the image
+        caption = await call_anthropic(get_image_caption(), gen_image_path)
+        video_prompt = await call_anthropic(prepare_video_prompt(caption))
+        image_url = poll_generated_result(image_id)
+        # Call gen video API
+        video_gen_job = call_generate_video(image_url, video_prompt)
+        logger.info(f"Started video generation with id: {image_id}")        
+    except Exception as e:
+        logger.error(f"Video generation workflow failed for {gen_image_path}: {str(e)}")
 
 
-def complete_video_generation(job, video_id: int) -> str:
+async def poll_video_generation_status(video_id: str):
+    while True:
+        status = video_gen_job.status()
+        logger.info(f"video gen status: {status.code.name}")
+        if status.code.name == "FINISHED":
+            complete_video_generation(video_id)
+            break
+        if status.code.name == "CANCELLED":
+            break
+        await asyncio.sleep(5)
+
+
+def complete_video_generation(video_id: str):
     """
     Complete the video generation in background.
     Returns file name of the video generated.
     """
     try:
-        result_dict, _ = job.result() # blocking call
+        result_dict, _ = video_gen_job.result() # blocking call
         vid_file_path = result_dict.get("video")
         vid_file_name = os.path.basename(vid_file_path)
-        vid_str = str(video_id)
+        vid_str = video_id
         os.system(f"cp {vid_file_path} {os.curdir}/{GEN_FOLDER}/")
         os.system(f"mv {os.curdir}/{GEN_FOLDER}/{vid_file_name} {os.curdir}/{GEN_FOLDER}/{vid_str}.mp4")
         logger.info(f"Video generation completed")
     except TimeoutError:
         logger.error("Background video generation timed out")
-    except CancelledError:
-        logger.error("Background video generation was cancelled")
     except Exception as e:
         logger.error(f"Background video generation failed: {str(e)}")
 
+
+async def video_tasks(id, image_path):
+    await start_video_generation_workflow(id, image_path)
+    await poll_video_generation_status(id)
 
 ## VIEW ##
 
@@ -822,16 +847,6 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
         request_id, bck_task = start_portrait_generation(photo_path, image_prompt)
         logger.info(f"Started portrait generation with request_id: {request_id}")
 
-        # Start video generation in background and get request_id.
-        # Requires portrait image to be ready first, so we do it in background task later.
-        image_url = poll_generated_result(request_id)
-        if image_url != "":
-            logger.info(f"Starting video generation after portrait is ready.")
-            # Prepare video prompt
-            caption = await call_anthropic(get_image_caption(), image_url, True)
-            video_prompt = await call_anthropic(prepare_video_prompt(caption))
-            vid, video_task = start_video_generation(image_url, video_prompt)
-
         # Return updates to show the iframe immediately with the placeholder image
         show_iframe = Iframe(
             src="/output_file",
@@ -840,7 +855,7 @@ async def process_form(name: str, job: str, place: str, photo_path: str):
             id="content-iframe",
             hx_swap_oob="true"
         )
-        return show_iframe, portrait_reload(request_id), bck_task, video_reload(str(vid)), video_task
+        return show_iframe, portrait_reload(request_id), video_reload(request_id), bck_task
 
     except Exception as e:
         logger.error(f"Error processing form: {str(e)}")
